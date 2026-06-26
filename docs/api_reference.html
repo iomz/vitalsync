@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vitalsync Server — API Reference</title>
+<style>
+:root{--bg:#f8f8f7;--bg2:#fff;--border:#e5e4e0;--text:#1a1a18;--muted:#6b6a65;--accent:#185fa5;--tag-bg:#e6f1fb;--tag-text:#0c447c;--method-post:#0f6e56;--method-post-bg:#e1f5ee;--method-get:#185fa5;--method-get-bg:#e6f1fb;--del-bg:#fcebeb;--del-text:#a32d2d;--code-bg:#f1efe8;--mono:ui-monospace,'SF Mono',Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1a;--bg2:#242422;--border:#3a3936;--text:#e2e0d8;--muted:#888780;--accent:#85b7eb;--tag-bg:#0c447c;--tag-text:#b5d4f4;--method-post:#1d9e75;--method-post-bg:#04342c;--method-get:#378add;--method-get-bg:#042c53;--del-bg:#501313;--del-text:#f09595;--code-bg:#2c2c2a;--mono:ui-monospace,'SF Mono',Menlo,monospace}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+.layout{display:grid;grid-template-columns:220px 1fr;min-height:100vh;max-width:1100px;margin:0 auto}
+nav{padding:1.5rem 1rem;border-right:1px solid var(--border);position:sticky;top:0;height:100vh;overflow-y:auto}
+nav h1{font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px}
+nav p{font-size:11px;color:var(--muted);margin-bottom:1.5rem}
+.nav-group{margin-bottom:1.25rem}
+.nav-label{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;padding-left:4px}
+nav a{display:block;font-size:12px;color:var(--muted);padding:4px 8px;border-radius:5px;text-decoration:none;transition:all .12s}
+nav a:hover,nav a.active{background:var(--tag-bg);color:var(--tag-text)}
+main{padding:2rem 2.5rem}
+section{margin-bottom:3.5rem;scroll-margin-top:2rem}
+h2{font-size:18px;font-weight:600;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)}
+h3{font-size:14px;font-weight:600;margin:1.75rem 0 .6rem}
+.endpoint{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:1.25rem;overflow:hidden}
+.ep-head{display:flex;align-items:center;gap:10px;padding:.75rem 1rem;cursor:pointer;user-select:none}
+.ep-head:hover{background:var(--bg)}
+.method{font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:.03em;min-width:44px;text-align:center}
+.GET{background:var(--method-get-bg);color:var(--method-get)}
+.POST{background:var(--method-post-bg);color:var(--method-post)}
+.DELETE{background:var(--del-bg);color:var(--del-text)}
+.ep-path{font-family:var(--mono);font-size:13px;color:var(--text);flex:1}
+.ep-desc{font-size:12px;color:var(--muted)}
+.chevron{color:var(--muted);font-size:12px;transition:transform .2s}
+.chevron.open{transform:rotate(180deg)}
+.ep-body{display:none;padding:.75rem 1rem 1rem;border-top:1px solid var(--border)}
+.ep-body.open{display:block}
+.field-table{width:100%;border-collapse:collapse;margin:.5rem 0}
+.field-table th{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)}
+.field-table td{font-size:12px;padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.field-table tr:last-child td{border-bottom:none}
+.fname{font-family:var(--mono);color:var(--accent)}
+.ftype{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.req{font-size:10px;background:var(--del-bg);color:var(--del-text);padding:1px 5px;border-radius:3px}
+.opt{font-size:10px;background:var(--code-bg);color:var(--muted);padding:1px 5px;border-radius:3px}
+pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:var(--mono);font-size:11.5px;overflow-x:auto;margin:.5rem 0;line-height:1.55}
+.key{color:#185fa5}
+@media(prefers-color-scheme:dark){.key{color:#85b7eb}}
+.str{color:#0f6e56}
+@media(prefers-color-scheme:dark){.str{color:#1d9e75}}
+.num{color:#854f0b}
+@media(prefers-color-scheme:dark){.num{color:#ef9f27}}
+.comment{color:var(--muted);font-style:italic}
+.tag{font-size:11px;padding:2px 7px;border-radius:4px;background:var(--tag-bg);color:var(--tag-text)}
+.scope-list{display:flex;flex-wrap:wrap;gap:6px;margin:.5rem 0}
+.scope{font-family:var(--mono);font-size:11px;background:var(--code-bg);padding:2px 7px;border-radius:4px;color:var(--text)}
+.note{font-size:12px;color:var(--muted);padding:.5rem .75rem;background:var(--tag-bg);border-radius:6px;margin:.5rem 0;border-left:3px solid var(--accent)}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <h1>Vitalsync</h1>
+  <p>Server API · v1 · sazanka.io</p>
+  <div class="nav-group">
+    <div class="nav-label">Auth</div>
+    <a href="#devices">Devices</a>
+    <a href="#tokens">Tokens</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Upload</div>
+    <a href="#transport">WebTransport</a>
+    <a href="#batches">Batches (fallback)</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Fetch</div>
+    <a href="#consumer-tokens">Consumer tokens</a>
+    <a href="#records">Records</a>
+    <a href="#batch-fetch">Batch fetch</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Admin</div>
+    <a href="#admin">Admin / purge</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Reference</div>
+    <a href="#errors">Errors</a>
+    <a href="#scopes">Scopes</a>
+    <a href="#schema">DB schema</a>
+  </div>
+</nav>
+<main>
+
+<section id="devices">
+<h2>Device registration</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/devices/register</span>
+    <span class="ep-desc">Register a new device</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires admin token or open registration (config-dependent). Returns device_id + long-lived refresh_token + initial access_token.</div>
+    <h3>Request body</h3>
+    <table class="field-table">
+      <tr><th>Field</th><th>Type</th><th></th><th>Description</th></tr>
+      <tr><td class="fname">app</td><td class="ftype">string</td><td><span class="req">required</span></td><td>"Vitalsync"</td></tr>
+      <tr><td class="fname">device_label</td><td class="ftype">string</td><td><span class="req">required</span></td><td>Human-readable label, e.g. "Iori iPhone"</td></tr>
+      <tr><td class="fname">platform</td><td class="ftype">string</td><td><span class="req">required</span></td><td>"iOS"</td></tr>
+      <tr><td class="fname">app_version</td><td class="ftype">string</td><td><span class="req">required</span></td><td>Semver string, e.g. "0.1.0"</td></tr>
+    </table>
+    <pre>{
+  <span class="key">"app"</span>: <span class="str">"Vitalsync"</span>,
+  <span class="key">"device_label"</span>: <span class="str">"Iori iPhone"</span>,
+  <span class="key">"platform"</span>: <span class="str">"iOS"</span>,
+  <span class="key">"app_version"</span>: <span class="str">"0.1.0"</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"device_id"</span>:     <span class="str">"dev_01J..."</span>,
+  <span class="key">"refresh_token"</span>: <span class="str">"vitalsync_refresh_..."</span>,
+  <span class="key">"access_token"</span>:  <span class="str">"vitalsync_access_..."</span>,
+  <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T12:00:00Z"</span>
+}</pre>
+  </div>
+</div>
+
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/devices/revoke</span>
+    <span class="ep-desc">Revoke a device (app-initiated)</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires valid access token for the device being revoked. Server sets revoked_at on device and invalidates all tokens.</div>
+    <h3>Request body</h3>
+    <pre>{ <span class="key">"device_id"</span>: <span class="str">"dev_01J..."</span> }</pre>
+    <h3>Response 200</h3>
+    <pre>{ <span class="key">"revoked"</span>: <span class="num">true</span>, <span class="key">"device_id"</span>: <span class="str">"dev_01J..."</span> }</pre>
+  </div>
+</div>
+</section>
+
+<section id="tokens">
+<h2>Token endpoints</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/tokens/session</span>
+    <span class="ep-desc">Get short-lived WebTransport session token</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Session token lifetime: 5 minutes. Used as URL query param on WebTransport connection (browser WT API has limited custom header support).</div>
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"device_id"</span>: <span class="str">"dev_01J..."</span>,
+  <span class="key">"capability"</span>: <span class="str">"webtransport_upload"</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"session_token"</span>: <span class="str">"vitalsync_wt_..."</span>,
+  <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T10:17:00Z"</span>,
+  <span class="key">"transport_url"</span>: <span class="str">"https://sazanka.io/vitalsync/v1/transport?token=vitalsync_wt_..."</span>
+}</pre>
+  </div>
+</div>
+
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/tokens/refresh</span>
+    <span class="ep-desc">Exchange refresh token for new access token</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"refresh_token"</span>: <span class="str">"vitalsync_refresh_..."</span>,
+  <span class="key">"device_id"</span>:     <span class="str">"dev_01J..."</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"access_token"</span>: <span class="str">"vitalsync_access_..."</span>,
+  <span class="key">"expires_at"</span>:   <span class="str">"2026-06-26T11:00:00Z"</span>
+}</pre>
+  </div>
+</div>
+</section>
+
+<section id="transport">
+<h2>WebTransport upload</h2>
+<div class="note">Endpoint: <code>https://sazanka.io/vitalsync/v1/transport?token=&lt;session-token&gt;</code><br>Uses reliable bidirectional streams. Health payloads must not use datagrams.</div>
+
+<h3>Control stream — hello</h3>
+<pre><span class="comment">// App → Server (first message on control stream)</span>
+{
+  <span class="key">"type"</span>:        <span class="str">"hello"</span>,
+  <span class="key">"schema"</span>:      <span class="str">"vitalsync.control.v1"</span>,
+  <span class="key">"device_id"</span>:   <span class="str">"dev_01J..."</span>,
+  <span class="key">"app_version"</span>: <span class="str">"0.1.0"</span>,
+  <span class="key">"supports"</span>:    [<span class="str">"health.batch.v1"</span>, <span class="str">"tombstone.v1"</span>]
+}
+
+<span class="comment">// Server → App</span>
+{
+  <span class="key">"type"</span>:            <span class="str">"hello_ack"</span>,
+  <span class="key">"server_time"</span>:    <span class="str">"2026-06-26T10:12:30Z"</span>,
+  <span class="key">"max_batch_bytes"</span>: <span class="num">1048576</span>
+}</pre>
+
+<h3>Batch upload stream</h3>
+<pre><span class="comment">// App → Server</span>
+{
+  <span class="key">"type"</span>:       <span class="str">"batch"</span>,
+  <span class="key">"schema"</span>:     <span class="str">"vitalsync.batch.v1"</span>,
+  <span class="key">"batch_id"</span>:   <span class="str">"batch_01J..."</span>,
+  <span class="key">"device_id"</span>:  <span class="str">"dev_01J..."</span>,
+  <span class="key">"created_at"</span>: <span class="str">"2026-06-26T10:12:30+09:00"</span>,
+  <span class="key">"records"</span>:    [ <span class="comment">/* record objects */</span> ],
+  <span class="key">"deleted"</span>:    [ <span class="comment">/* tombstone objects */</span> ]
+}
+
+<span class="comment">// Server → App</span>
+{
+  <span class="key">"type"</span>:      <span class="str">"batch_ack"</span>,
+  <span class="key">"batch_id"</span>:  <span class="str">"batch_01J..."</span>,
+  <span class="key">"accepted"</span>:  <span class="num">120</span>,
+  <span class="key">"deleted"</span>:   <span class="num">3</span>,
+  <span class="key">"duplicate"</span>: <span class="num">false</span>
+}</pre>
+</section>
+
+<section id="batches">
+<h2>Batch upload (HTTPS fallback)</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/batches</span>
+    <span class="ep-desc">Upload batch when WebTransport unavailable</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Exact same batch JSON schema as WebTransport. Idempotency-Key header is required and must equal batch_id. Auth via Bearer access token.</div>
+    <h3>Headers</h3>
+    <table class="field-table">
+      <tr><th>Header</th><th>Value</th></tr>
+      <tr><td class="fname">Authorization</td><td><code>Bearer vitalsync_access_...</code></td></tr>
+      <tr><td class="fname">Content-Type</td><td><code>application/json</code></td></tr>
+      <tr><td class="fname">Idempotency-Key</td><td><code>&lt;batch_id&gt;</code> — required</td></tr>
+    </table>
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"schema"</span>:     <span class="str">"vitalsync.batch.v1"</span>,
+  <span class="key">"batch_id"</span>:   <span class="str">"batch_01J..."</span>,
+  <span class="key">"device_id"</span>:  <span class="str">"dev_01J..."</span>,
+  <span class="key">"created_at"</span>: <span class="str">"2026-06-26T10:12:30+09:00"</span>,
+  <span class="key">"timezone"</span>:   <span class="str">"Asia/Tokyo"</span>,
+  <span class="key">"sequence"</span>:   <span class="num">42</span>,
+  <span class="key">"records"</span>:    [],
+  <span class="key">"deleted"</span>:    []
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"batch_id"</span>:  <span class="str">"batch_01J..."</span>,
+  <span class="key">"accepted"</span>:  <span class="num">120</span>,
+  <span class="key">"deleted"</span>:   <span class="num">3</span>,
+  <span class="key">"duplicate"</span>: <span class="num">false</span>
+}</pre>
+    <h3>Conflict (same batch_id, different payload)</h3>
+    <pre>{
+  <span class="key">"type"</span>:    <span class="str">"error"</span>,
+  <span class="key">"code"</span>:    <span class="str">"batch_id_conflict"</span>,
+  <span class="key">"message"</span>: <span class="str">"batch_id already exists with different payload"</span>
+}</pre>
+  </div>
+</div>
+</section>
+
+<section id="consumer-tokens">
+<h2>Consumer tokens</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/consumer-tokens</span>
+    <span class="ep-desc">Issue a scoped read token for downstream consumers</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires admin token. Consumer tokens are read-only and scoped to specific data types.</div>
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"scope"</span>:              [<span class="str">"read:sleep"</span>, <span class="str">"read:activity"</span>, <span class="str">"read:vitals"</span>],
+  <span class="key">"expires_in_seconds"</span>: <span class="num">3600</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"access_token"</span>: <span class="str">"vitalsync_consumer_..."</span>,
+  <span class="key">"expires_at"</span>:   <span class="str">"2026-06-26T11:12:30Z"</span>
+}</pre>
+  </div>
+</div>
+</section>
+
+<section id="records">
+<h2>Record fetch</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method GET">GET</span>
+    <span class="ep-path">/vitalsync/v1/records</span>
+    <span class="ep-desc">Fetch normalized records by type and time range</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires consumer token with appropriate read scope.</div>
+    <h3>Query parameters</h3>
+    <table class="field-table">
+      <tr><th>Param</th><th>Type</th><th></th><th>Description</th></tr>
+      <tr><td class="fname">sample_type</td><td class="ftype">string</td><td><span class="req">required</span></td><td>e.g. <code>sleep_analysis</code>, <code>step_count</code></td></tr>
+      <tr><td class="fname">start</td><td class="ftype">date</td><td><span class="opt">optional</span></td><td>ISO 8601 date or datetime</td></tr>
+      <tr><td class="fname">end</td><td class="ftype">date</td><td><span class="opt">optional</span></td><td>ISO 8601 date or datetime</td></tr>
+      <tr><td class="fname">cursor</td><td class="ftype">string</td><td><span class="opt">optional</span></td><td>Pagination cursor from previous response</td></tr>
+      <tr><td class="fname">limit</td><td class="ftype">integer</td><td><span class="opt">optional</span></td><td>Max records per page (default 500)</td></tr>
+    </table>
+    <h3>Example request</h3>
+    <pre>GET /vitalsync/v1/records?sample_type=sleep_analysis&start=2026-06-01&end=2026-06-26
+Authorization: Bearer vitalsync_consumer_...</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"schema"</span>:      <span class="str">"vitalsync.records.v1"</span>,
+  <span class="key">"records"</span>:     [ <span class="comment">/* record objects */</span> ],
+  <span class="key">"next_cursor"</span>: <span class="num">null</span>  <span class="comment">// or opaque cursor string</span>
+}</pre>
+  </div>
+</div>
+</section>
+
+<section id="batch-fetch">
+<h2>Batch fetch</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method GET">GET</span>
+    <span class="ep-path">/vitalsync/v1/batches</span>
+    <span class="ep-desc">Fetch raw immutable batches since a timestamp</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Returns raw batch envelopes as stored. Useful for reprocessing or debugging. Consumer token required.</div>
+    <h3>Query parameters</h3>
+    <table class="field-table">
+      <tr><th>Param</th><th>Type</th><th></th><th>Description</th></tr>
+      <tr><td class="fname">since</td><td class="ftype">datetime</td><td><span class="opt">optional</span></td><td>ISO 8601 datetime — fetch batches received after this time</td></tr>
+      <tr><td class="fname">device_id</td><td class="ftype">string</td><td><span class="opt">optional</span></td><td>Filter to a specific device</td></tr>
+      <tr><td class="fname">cursor</td><td class="ftype">string</td><td><span class="opt">optional</span></td><td>Pagination cursor</td></tr>
+    </table>
+    <h3>Example</h3>
+    <pre>GET /vitalsync/v1/batches?since=2026-06-01T00:00:00Z
+Authorization: Bearer vitalsync_consumer_...</pre>
+  </div>
+</div>
+</section>
+
+<section id="admin">
+<h2>Admin endpoints</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/devices/{device_id}/revoke</span>
+    <span class="ep-desc">Admin-revoke a device</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires <code>admin:devices</code> scope. Sets revoked_at, invalidates all tokens for device.</div>
+  </div>
+</div>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/devices/{device_id}/purge</span>
+    <span class="ep-desc">Delete all data for a device</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires <code>admin:devices</code> scope. Deletes all healthkit_batches and healthkit_records rows for device. Irreversible.</div>
+  </div>
+</div>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/purge</span>
+    <span class="ep-desc">Purge by sample type</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <h3>Query parameter</h3>
+    <pre>POST /vitalsync/v1/purge?sample_type=sleep_analysis</pre>
+    <div class="note">Requires <code>admin:devices</code> scope. Deletes all records of the given sample type across all devices.</div>
+  </div>
+</div>
+</section>
+
+<section id="errors">
+<h2>Error responses</h2>
+<pre>{
+  <span class="key">"type"</span>:      <span class="str">"error"</span>,
+  <span class="key">"code"</span>:      <span class="str">"unsupported_schema"</span>,
+  <span class="key">"message"</span>:   <span class="str">"schema vitalsync.batch.v0 is not supported"</span>,
+  <span class="key">"retryable"</span>: <span class="num">false</span>
+}</pre>
+<table class="field-table" style="margin-top:1rem">
+  <tr><th>Code</th><th>Retryable</th><th>Description</th></tr>
+  <tr><td class="fname">network_unavailable</td><td>✓</td><td>Transient network failure</td></tr>
+  <tr><td class="fname">server_error</td><td>✓</td><td>5xx — retry with backoff</td></tr>
+  <tr><td class="fname">token_expired</td><td>✓</td><td>Refresh access token then retry</td></tr>
+  <tr><td class="fname">webtransport_unavailable</td><td>✓</td><td>Fall back to HTTPS POST</td></tr>
+  <tr><td class="fname">permission_denied</td><td>✗</td><td>HealthKit auth revoked</td></tr>
+  <tr><td class="fname">device_revoked</td><td>✗</td><td>Device token revoked server-side</td></tr>
+  <tr><td class="fname">unsupported_schema</td><td>✗</td><td>Schema version not supported</td></tr>
+  <tr><td class="fname">batch_too_large</td><td>✗</td><td>Batch exceeds 1 MiB after split attempt</td></tr>
+  <tr><td class="fname">batch_id_conflict</td><td>✗</td><td>Same batch_id, different payload SHA-256</td></tr>
+</table>
+</section>
+
+<section id="scopes">
+<h2>Token scopes</h2>
+<div class="scope-list">
+  <span class="scope">upload:health</span>
+  <span class="scope">read:sleep</span>
+  <span class="scope">read:activity</span>
+  <span class="scope">read:body</span>
+  <span class="scope">read:vitals</span>
+  <span class="scope">read:blood_pressure</span>
+  <span class="scope">read:workouts</span>
+  <span class="scope">admin:tokens</span>
+  <span class="scope">admin:devices</span>
+</div>
+<table class="field-table" style="margin-top:1rem">
+  <tr><th>Role</th><th>Scopes</th></tr>
+  <tr><td>Device token</td><td><code>upload:health</code></td></tr>
+  <tr><td>Consumer token</td><td>one or more <code>read:*</code> scopes</td></tr>
+  <tr><td>Admin token</td><td><code>admin:tokens</code> <code>admin:devices</code></td></tr>
+</table>
+</section>
+
+<section id="schema">
+<h2>Database schema</h2>
+<pre><span class="comment">-- Raw immutable batches</span>
+healthkit_batches (
+  batch_id        text primary key,
+  device_id       text not null,
+  created_at      timestamptz not null,
+  received_at     timestamptz not null,
+  schema          text not null,
+  payload_json    jsonb not null,
+  payload_sha256  text not null
+)
+
+<span class="comment">-- Normalized record index</span>
+healthkit_records (
+  source          text not null,
+  source_id       text not null,
+  device_id       text not null,
+  sample_type     text not null,
+  source_bundle_id text,
+  source_name     text,
+  start_time      timestamptz,
+  end_time        timestamptz,
+  timezone        text,
+  value_json      jsonb not null,
+  metadata_json   jsonb not null,
+  batch_id        text not null,
+  deleted         boolean not null default false,
+  updated_at      timestamptz not null,
+  primary key (source, source_id)
+)
+
+<span class="comment">-- Devices</span>
+healthkit_devices (
+  device_id    text primary key,
+  device_label text,
+  app_version  text,
+  platform     text,
+  created_at   timestamptz,
+  revoked_at   timestamptz
+)
+
+<span class="comment">-- Tokens (hash only — never store plaintext)</span>
+healthkit_tokens (
+  token_hash  text primary key,
+  device_id   text not null,
+  token_type  text not null,  <span class="comment">-- 'refresh' | 'access' | 'session' | 'consumer'</span>
+  expires_at  timestamptz,
+  revoked_at  timestamptz
+)</pre>
+</section>
+
+</main>
+</div>
+<script>
+function toggle(head){
+  const body=head.nextElementSibling;
+  const chev=head.querySelector('.chevron');
+  body.classList.toggle('open');
+  chev.classList.toggle('open');
+}
+</script>
+</body>
+</html>

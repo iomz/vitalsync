@@ -1,0 +1,10 @@
+services:
+  receiver:
+    build:
+      context: .
+      dockerfile: receiver/Dockerfile
+    ports:
+      - "8790:8790"
+    environment:
+      VITALSYNC_HOST: "0.0.0.0"
+      VITALSYNC_PORT: "8790"
