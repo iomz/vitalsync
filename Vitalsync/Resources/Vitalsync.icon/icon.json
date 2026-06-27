@@ -1,0 +1,36 @@
+{
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "a_clean_app_icon_style_graphic_on_a_dark_navy_blue.png",
+          "name" : "a_clean_app_icon_style_graphic_on_a_dark_navy_blue",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              52.42983096882381
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

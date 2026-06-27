@@ -8,8 +8,33 @@ private let log = Logger(subsystem: "io.sazanka.vitalsync", category: "HealthKit
 struct VitalsyncTypeGroup: Identifiable {
     let id: String
     let displayName: String
-    let sampleTypes: [HKSampleType]
+    let authorizationTypes: [HKObjectType]
+    let queryTypes: [HKSampleType]
     var enabled: Bool
+
+    init(
+        id: String,
+        displayName: String,
+        authorizationTypes: [HKObjectType],
+        queryTypes: [HKSampleType],
+        enabled: Bool
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.authorizationTypes = authorizationTypes
+        self.queryTypes = queryTypes
+        self.enabled = enabled
+    }
+
+    init(id: String, displayName: String, sampleTypes: [HKSampleType], enabled: Bool) {
+        self.init(
+            id: id,
+            displayName: displayName,
+            authorizationTypes: sampleTypes.map { $0 as HKObjectType },
+            queryTypes: sampleTypes,
+            enabled: enabled
+        )
+    }
 }
 
 // MARK: - Anchor store (persisted per sample type)
@@ -58,6 +83,7 @@ final class HealthKitManager: ObservableObject {
     private let anchors = AnchorStore()
 
     @Published var authorizationStatus: [String: HKAuthorizationStatus] = [:]
+    static var isHealthDataAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
     // MARK: Type groups
 
@@ -88,28 +114,54 @@ final class HealthKitManager: ObservableObject {
             HKObjectType.quantityType(forIdentifier: .oxygenSaturation)!,
             HKObjectType.quantityType(forIdentifier: .bodyTemperature)!,
         ], enabled: true),
-        VitalsyncTypeGroup(id: "bloodpressure", displayName: "Blood Pressure", sampleTypes: [
-            HKObjectType.correlationType(forIdentifier: .bloodPressure)!,
+        VitalsyncTypeGroup(id: "bloodpressure", displayName: "Blood Pressure", authorizationTypes: [
+            HKQuantityType(.bloodPressureSystolic),
+            HKQuantityType(.bloodPressureDiastolic),
+        ], queryTypes: [
+            HKCorrelationType(.bloodPressure),
         ], enabled: true),
     ]
 
     // MARK: Request permissions
 
-    func requestAuthorization(groups: [VitalsyncTypeGroup]) async throws {
-        let enabled = groups.filter(\.enabled)
-        let readTypes = Set(enabled.flatMap(\.sampleTypes))
-        try await store.requestAuthorization(toShare: [], read: readTypes)
-        refreshAuthStatus(for: enabled)
+    func authorizationRequestStatus(groups: [VitalsyncTypeGroup]) async throws -> HKAuthorizationRequestStatus {
+        let readTypes = authorizationReadTypes(for: groups)
+        return try await withCheckedThrowingContinuation { cont in
+            store.getRequestStatusForAuthorization(toShare: [], read: readTypes) { status, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: status)
+                }
+            }
+        }
     }
 
-    private func refreshAuthStatus(for groups: [VitalsyncTypeGroup]) {
+    func requestAuthorization(groups: [VitalsyncTypeGroup]) async throws {
+        let enabled = groups.filter(\.enabled)
+        let readTypes = authorizationReadTypes(for: enabled)
+        try await store.requestAuthorization(toShare: [], read: readTypes)
+        refreshAuthorizationStatus(for: enabled)
+    }
+
+    private func authorizationReadTypes(for groups: [VitalsyncTypeGroup]) -> Set<HKObjectType> {
+        Set(groups.filter(\.enabled).flatMap(\.authorizationTypes))
+    }
+
+    func refreshAuthorizationStatus(for groups: [VitalsyncTypeGroup]) {
         var status: [String: HKAuthorizationStatus] = [:]
         for group in groups {
-            for type in group.sampleTypes {
+            for type in group.authorizationTypes {
                 status[group.id] = store.authorizationStatus(for: type)
             }
         }
         authorizationStatus = status
+    }
+
+    func enabledGroupsHaveDeniedStatus(_ groups: [VitalsyncTypeGroup]) -> Bool {
+        groups
+            .filter(\.enabled)
+            .contains { authorizationStatus[$0.id] == .sharingDenied }
     }
 
     // MARK: Anchored query (incremental sync)
@@ -164,7 +216,7 @@ final class HealthKitManager: ObservableObject {
     // MARK: Debug anchor reset
 
     func resetAnchor(for group: VitalsyncTypeGroup) async {
-        for type in group.sampleTypes {
+        for type in group.queryTypes {
             if let vitalsyncType = vitalsyncSampleType(for: type) {
                 await anchors.reset(for: vitalsyncType.rawValue)
                 log.warning("Anchor reset for \(vitalsyncType.rawValue) — full resync will occur")

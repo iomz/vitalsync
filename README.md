@@ -37,7 +37,7 @@ Script builds and installs through Xcode automatic signing. If multiple devices 
 
 ## Run local receiver
 
-The local receiver is stdlib-only Python and stores data in SQLite. Run it from an editable checkout:
+The local receiver is stdlib-only Python and stores data in SQLite. For iPhone testing on your LAN, run it from an editable checkout:
 
 ```sh
 VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" \
@@ -52,19 +52,23 @@ python -m pip install -e receiver
 python -m vitalsync_receiver
 ```
 
-Docker Compose also runs the receiver on port `8790`:
+Direct package runs bind to `127.0.0.1` by default. Set `VITALSYNC_HOST=0.0.0.0` when the receiver must accept LAN traffic.
+
+Docker Compose runs the receiver on port `8790`, binds it to localhost for reverse-proxy use, and persists SQLite data in the `vitalsync-data` volume mounted at `/data`. Create a local env file first:
 
 ```sh
-docker compose up receiver
+cp receiver/.env.example receiver/.env
+VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" >> receiver/.env
+docker compose up vitalsync-receiver
 ```
 
-On iPhone, set Account -> Receiver -> API base URL to your Mac LAN IP, not `localhost`:
+On iPhone, set Account -> Receiver -> API base URL to a host reachable from the device, not `localhost`:
 
 ```text
 http://YOUR_MAC_LAN_IP:8790/vitalsync/v1
 ```
 
-Open registration is enabled by default for local testing. Admin-only endpoints and consumer token creation require `Authorization: Bearer $VITALSYNC_ADMIN_TOKEN`.
+Device registration is closed by default. `POST /devices/register` requires `Authorization: Bearer $VITALSYNC_ADMIN_TOKEN` unless the receiver is started with `--open-registration` or `VITALSYNC_OPEN_REGISTRATION=1`. Admin-only endpoints and consumer token creation also require the admin token.
 
 Create a consumer read token:
 
@@ -81,6 +85,8 @@ Fetch records:
 curl -sS "http://127.0.0.1:8790/vitalsync/v1/records?sample_type=step_count" \
   -H "Authorization: Bearer vitalsync_consumer_..."
 ```
+
+Uploaded and queried timestamps must be valid ISO-8601 values. The receiver normalizes accepted timestamps to UTC before storing them.
 
 WebTransport upload is specified but not implemented in this stdlib receiver; iOS falls back to `POST /batches`.
 

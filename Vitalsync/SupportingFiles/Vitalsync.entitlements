@@ -4,5 +4,9 @@
 <dict>
 	<key>com.apple.developer.healthkit</key>
 	<true/>
+	<!-- Requires Apple approval and a paid developer team.
+	<key>com.apple.developer.device-information.user-assigned-device-name</key>
+	<true/>
+	-->
 </dict>
 </plist>

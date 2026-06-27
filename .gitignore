@@ -11,3 +11,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+
+# ignore user .env for the receiver
+receiver/.env

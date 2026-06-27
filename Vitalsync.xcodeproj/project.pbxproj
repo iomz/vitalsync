@@ -15,6 +15,8 @@
 		111111111111111111111106 /* HealthKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111006 /* HealthKit.framework */; };
 		111111111111111111111107 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111007 /* WebKit.framework */; };
 		111111111111111111111108 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111008 /* Security.framework */; };
+		7536C5162FEF89C2004DFD3C /* Vitalsync.icon in Resources */ = {isa = PBXBuildFile; fileRef = 7536C5142FEF89C2004DFD3C /* Vitalsync.icon */; };
+		7536C5182FEF8B2B004DFD3C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7536C5172FEF8B2B004DFD3C /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +32,8 @@
 		111111111111111111111010 /* Vitalsync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vitalsync.entitlements; sourceTree = "<group>"; };
 		111111111111111111111011 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		111111111111111111111012 /* Vitalsync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vitalsync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7536C5142FEF89C2004DFD3C /* Vitalsync.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Vitalsync.icon; sourceTree = "<group>"; };
+		7536C5172FEF8B2B004DFD3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +63,7 @@
 		111111111111111111111302 /* Vitalsync */ = {
 			isa = PBXGroup;
 			children = (
+				7536C5152FEF89C2004DFD3C /* Resources */,
 				111111111111111111111303 /* Sources */,
 				111111111111111111111304 /* SupportingFiles */,
 			);
@@ -110,6 +115,15 @@
 				111111111111111111111012 /* Vitalsync.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		7536C5152FEF89C2004DFD3C /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				7536C5142FEF89C2004DFD3C /* Vitalsync.icon */,
+				7536C5172FEF8B2B004DFD3C /* Assets.xcassets */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -170,6 +184,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7536C5182FEF8B2B004DFD3C /* Assets.xcassets in Resources */,
+				7536C5162FEF89C2004DFD3C /* Vitalsync.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -314,7 +330,9 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 111111111111111111111011 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = Vitalsync;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Vitalsync/SupportingFiles/Vitalsync.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -324,7 +342,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Vitalsync/SupportingFiles/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Vitalsync";
+				INFOPLIST_KEY_CFBundleDisplayName = Vitalsync;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -347,7 +365,9 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 111111111111111111111011 /* Signing.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = Vitalsync;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Vitalsync/SupportingFiles/Vitalsync.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -357,7 +377,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Vitalsync/SupportingFiles/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Vitalsync";
+				INFOPLIST_KEY_CFBundleDisplayName = Vitalsync;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -12,12 +12,14 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -58,6 +60,9 @@ SAMPLE_TYPE_SCOPES = {
 }
 
 
+logger = logging.getLogger("vitalsync_receiver")
+
+
 def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
 
@@ -66,26 +71,31 @@ def iso(value: dt.datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def parse_time(value: str | None) -> str | None:
+def parse_time(value: str | None, *, field: str = "timestamp") -> str | None:
     if not value:
         return None
-    return normalize_time(value)
+    return normalize_time(value, field=field)
 
 
-def normalize_time(value: Any) -> str | None:
+def normalize_time(value: Any, *, field: str = "timestamp") -> str | None:
     if value is None:
         return None
+
     raw = str(value).strip()
     if not raw:
         return None
+
     if len(raw) == 10:
         raw = f"{raw}T00:00:00Z"
+
     try:
         parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return raw
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from exc
+
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
+
     return iso(parsed.astimezone(dt.timezone.utc))
 
 
@@ -140,6 +150,9 @@ class Config:
 class Store:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        db_parent = Path(db_path).expanduser().parent
+        if str(db_parent) not in ("", "."):
+            db_parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.init_db()
 
@@ -253,7 +266,9 @@ class Store:
         if not row or row["revoked_at"] or row["device_revoked_at"]:
             return None
         if row["expires_at"]:
-            expires = dt.datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+            expires = dt.datetime.fromisoformat(
+                row["expires_at"].replace("Z", "+00:00")
+            )
             if expires <= utcnow():
                 return None
         return {
@@ -307,10 +322,10 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
     def config(self) -> Config:
         return self.server.config  # type: ignore[attr-defined]
 
-    def log_message(self, fmt: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         if os.environ.get("VITALSYNC_QUIET") == "1":
             return
-        super().log_message(fmt, *args)
+        super().log_message(format, *args)
 
     def do_GET(self) -> None:
         self.route("GET")
@@ -343,9 +358,17 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 self.fetch_records(qs)
             elif method == "GET" and rel == "/batches":
                 self.fetch_batches(qs)
-            elif method == "POST" and rel.startswith("/devices/") and rel.endswith("/revoke"):
+            elif (
+                method == "POST"
+                and rel.startswith("/devices/")
+                and rel.endswith("/revoke")
+            ):
                 self.admin_revoke_device(rel.split("/")[2])
-            elif method == "POST" and rel.startswith("/devices/") and rel.endswith("/purge"):
+            elif (
+                method == "POST"
+                and rel.startswith("/devices/")
+                and rel.endswith("/purge")
+            ):
                 self.admin_purge_device(rel.split("/")[2])
             elif method == "POST" and rel == "/purge":
                 self.admin_purge_sample_type(qs)
@@ -364,10 +387,21 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             return
         except ValueError as exc:
             self.error_json(HTTPStatus.BAD_REQUEST, "bad_request", str(exc))
-        except sqlite3.IntegrityError as exc:
-            self.error_json(HTTPStatus.CONFLICT, "conflict", str(exc))
-        except Exception as exc:
-            self.error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "server_error", str(exc), retryable=True)
+        except sqlite3.IntegrityError:
+            logger.exception("database integrity error")
+            self.error_json(
+                HTTPStatus.CONFLICT,
+                "conflict",
+                "database constraint conflict",
+            )
+        except Exception:
+            logger.exception("unhandled request error")
+            self.error_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "server_error",
+                "internal server error",
+                retryable=True,
+            )
 
     def read_json(self, max_bytes: int = MAX_BATCH_BYTES + 4096) -> Any:
         length = int(self.headers.get("Content-Length", "0"))
@@ -390,29 +424,51 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
     def require_auth(self, *scopes: str) -> dict[str, Any] | None:
         token = self.bearer_token()
         if not token:
-            self.error_json(HTTPStatus.UNAUTHORIZED, "missing_token", "Authorization Bearer token required")
+            self.error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "missing_token",
+                "Authorization Bearer token required",
+            )
             return None
         principal = self.store.validate_token(token, self.config)
         if not principal:
-            self.error_json(HTTPStatus.UNAUTHORIZED, "token_expired", "token missing, expired, or revoked", retryable=True)
+            self.error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "token_expired",
+                "token missing, expired, or revoked",
+                retryable=True,
+            )
             return None
         principal_scopes = set(principal["scopes"])
         if scopes and not set(scopes).issubset(principal_scopes):
-            self.error_json(HTTPStatus.FORBIDDEN, "permission_denied", "token scope is insufficient")
+            self.error_json(
+                HTTPStatus.FORBIDDEN, "permission_denied", "token scope is insufficient"
+            )
             return None
         return principal
 
     def require_any_scope(self, scopes: list[str]) -> dict[str, Any] | None:
         token = self.bearer_token()
         if not token:
-            self.error_json(HTTPStatus.UNAUTHORIZED, "missing_token", "Authorization Bearer token required")
+            self.error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "missing_token",
+                "Authorization Bearer token required",
+            )
             return None
         principal = self.store.validate_token(token, self.config)
         if not principal:
-            self.error_json(HTTPStatus.UNAUTHORIZED, "token_expired", "token missing, expired, or revoked", retryable=True)
+            self.error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "token_expired",
+                "token missing, expired, or revoked",
+                retryable=True,
+            )
             return None
         if not set(principal["scopes"]).intersection(scopes):
-            self.error_json(HTTPStatus.FORBIDDEN, "permission_denied", "token scope is insufficient")
+            self.error_json(
+                HTTPStatus.FORBIDDEN, "permission_denied", "token scope is insufficient"
+            )
             return None
         return principal
 
@@ -440,8 +496,12 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 """,
                 (device_id, label, app_version, platform, iso(utcnow())),
             )
-            self.store.insert_token(conn, refresh, device_id, "refresh", ["upload:health"], refresh_expires)
-            self.store.insert_token(conn, access, device_id, "access", ["upload:health"], access_expires)
+            self.store.insert_token(
+                conn, refresh, device_id, "refresh", ["upload:health"], refresh_expires
+            )
+            self.store.insert_token(
+                conn, access, device_id, "access", ["upload:health"], access_expires
+            )
         self.write_json(
             {
                 "device_id": device_id,
@@ -460,9 +520,15 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         if not device_id:
             raise ValueError("device_id is required")
         if principal["device_id"] != device_id:
-            self.error_json(HTTPStatus.FORBIDDEN, "permission_denied", "token cannot revoke another device")
+            self.error_json(
+                HTTPStatus.FORBIDDEN,
+                "permission_denied",
+                "token cannot revoke another device",
+            )
             return
-        self.write_json({"revoked": self.store.revoke_device(device_id), "device_id": device_id})
+        self.write_json(
+            {"revoked": self.store.revoke_device(device_id), "device_id": device_id}
+        )
 
     def refresh_token(self) -> None:
         body = self.read_json()
@@ -471,13 +537,24 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         if not refresh or not device_id:
             raise ValueError("refresh_token and device_id are required")
         principal = self.store.validate_token(refresh, self.config)
-        if not principal or principal["token_type"] != "refresh" or principal["device_id"] != device_id:
-            self.error_json(HTTPStatus.UNAUTHORIZED, "token_expired", "refresh token missing, expired, or revoked", retryable=True)
+        if (
+            not principal
+            or principal["token_type"] != "refresh"
+            or principal["device_id"] != device_id
+        ):
+            self.error_json(
+                HTTPStatus.UNAUTHORIZED,
+                "token_expired",
+                "refresh token missing, expired, or revoked",
+                retryable=True,
+            )
             return
         access = make_id("vitalsync_access")
         expires = utcnow() + dt.timedelta(seconds=ACCESS_TOKEN_SECONDS)
         with self.store.lock, self.store.connect() as conn:
-            self.store.insert_token(conn, access, device_id, "access", ["upload:health"], expires)
+            self.store.insert_token(
+                conn, access, device_id, "access", ["upload:health"], expires
+            )
         self.write_json({"access_token": access, "expires_at": iso(expires)})
 
     def session_token(self) -> None:
@@ -487,12 +564,18 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             return
         device_id = str(body.get("device_id") or "")
         if principal["device_id"] != device_id:
-            self.error_json(HTTPStatus.FORBIDDEN, "permission_denied", "device_id does not match token")
+            self.error_json(
+                HTTPStatus.FORBIDDEN,
+                "permission_denied",
+                "device_id does not match token",
+            )
             return
         token = make_id("vitalsync_wt")
         expires = utcnow() + dt.timedelta(seconds=SESSION_TOKEN_SECONDS)
         with self.store.lock, self.store.connect() as conn:
-            self.store.insert_token(conn, token, device_id, "session", ["upload:health"], expires)
+            self.store.insert_token(
+                conn, token, device_id, "session", ["upload:health"], expires
+            )
         self.write_json(
             {
                 "session_token": token,
@@ -510,7 +593,14 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         self.write_json(ack)
 
     def store_batch(self, body: dict[str, Any], auth_device_id: str) -> dict[str, Any]:
-        required = ["schema", "batch_id", "device_id", "created_at", "records", "deleted"]
+        required = [
+            "schema",
+            "batch_id",
+            "device_id",
+            "created_at",
+            "records",
+            "deleted",
+        ]
         missing = [key for key in required if key not in body]
         if missing:
             raise ValueError(f"missing required fields: {', '.join(missing)}")
@@ -527,7 +617,11 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             raise ValueError("Idempotency-Key header must equal batch_id")
         device_id = str(body["device_id"])
         if auth_device_id != device_id:
-            self.error_json(HTTPStatus.FORBIDDEN, "permission_denied", "device_id does not match token")
+            self.error_json(
+                HTTPStatus.FORBIDDEN,
+                "permission_denied",
+                "device_id does not match token",
+            )
             raise ResponseSent()
         records = body.get("records") or []
         deleted = body.get("deleted") or []
@@ -537,7 +631,8 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         payload_json = canonical_json(body)
         with self.store.lock, self.store.connect() as conn:
             existing = conn.execute(
-                "select payload_sha256 from healthkit_batches where batch_id = ?", (batch_id,)
+                "select payload_sha256 from healthkit_batches where batch_id = ?",
+                (batch_id,),
             ).fetchone()
             if existing:
                 if existing["payload_sha256"] != payload_hash:
@@ -570,7 +665,12 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 ),
             )
             self.index_records(conn, device_id, batch_id, records, deleted)
-        return {"batch_id": batch_id, "accepted": len(records), "deleted": len(deleted), "duplicate": False}
+        return {
+            "batch_id": batch_id,
+            "accepted": len(records),
+            "deleted": len(deleted),
+            "duplicate": False,
+        }
 
     def index_records(
         self,
@@ -586,7 +686,9 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             source_id = str(record.get("source_id") or "")
             sample_type = str(record.get("sample_type") or "")
             if not source or not source_id or not sample_type:
-                raise ValueError("record source, source_id, and sample_type are required")
+                raise ValueError(
+                    "record source, source_id, and sample_type are required"
+                )
             conn.execute(
                 """
                 insert into healthkit_records (
@@ -614,8 +716,8 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                     sample_type,
                     record.get("source_bundle_id"),
                     record.get("source_name"),
-                    normalize_time(record.get("start_time")),
-                    normalize_time(record.get("end_time")),
+                    normalize_time(record.get("start_time"), field="record.start_time"),
+                    normalize_time(record.get("end_time"), field="record.end_time"),
                     record.get("timezone"),
                     canonical_json(record.get("value") or {}),
                     canonical_json(record.get("metadata") or {}),
@@ -628,7 +730,9 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             source_id = str(tombstone.get("source_id") or "")
             sample_type = str(tombstone.get("sample_type") or "")
             if not source or not source_id or not sample_type:
-                raise ValueError("tombstone source, source_id, and sample_type are required")
+                raise ValueError(
+                    "tombstone source, source_id, and sample_type are required"
+                )
             conn.execute(
                 """
                 insert into healthkit_records (
@@ -656,7 +760,9 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         if not set(scopes).issubset(allowed):
             raise ValueError("scope contains unsupported read scope")
         ttl = int(body.get("expires_in_seconds") or ACCESS_TOKEN_SECONDS)
-        expires = utcnow() + dt.timedelta(seconds=max(60, min(ttl, REFRESH_TOKEN_SECONDS)))
+        expires = utcnow() + dt.timedelta(
+            seconds=max(60, min(ttl, REFRESH_TOKEN_SECONDS))
+        )
         token = make_id("vitalsync_consumer")
         with self.store.lock, self.store.connect() as conn:
             self.store.insert_token(conn, token, None, "consumer", scopes, expires)
@@ -673,8 +779,8 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             return
         limit = min(int(self.query_one(qs, "limit") or "500"), 1000)
         offset = read_cursor(self.query_one(qs, "cursor"))
-        start = parse_time(self.query_one(qs, "start"))
-        end = parse_time(self.query_one(qs, "end"))
+        start = parse_time(self.query_one(qs, "start"), field="start")
+        end = parse_time(self.query_one(qs, "end"), field="end")
         clauses = ["sample_type = ?", "deleted = 0"]
         params: list[Any] = [sample_type]
         if start:
@@ -726,7 +832,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         offset = read_cursor(self.query_one(qs, "cursor"))
         clauses: list[str] = []
         params: list[Any] = []
-        since = parse_time(self.query_one(qs, "since"))
+        since = parse_time(self.query_one(qs, "since"), field="since")
         device_id = self.query_one(qs, "device_id")
         if since:
             clauses.append("received_at > ?")
@@ -758,7 +864,9 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
     def admin_revoke_device(self, device_id: str) -> None:
         if not self.require_auth("admin:devices"):
             return
-        self.write_json({"revoked": self.store.revoke_device(device_id), "device_id": device_id})
+        self.write_json(
+            {"revoked": self.store.revoke_device(device_id), "device_id": device_id}
+        )
 
     def admin_purge_device(self, device_id: str) -> None:
         if not self.require_auth("admin:devices"):
@@ -772,14 +880,22 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         sample_type = self.query_one(qs, "sample_type")
         if not sample_type:
             raise ValueError("sample_type is required")
-        self.write_json({"purged": True, "sample_type": sample_type, "records": self.store.purge_sample_type(sample_type)})
+        self.write_json(
+            {
+                "purged": True,
+                "sample_type": sample_type,
+                "records": self.store.purge_sample_type(sample_type),
+            }
+        )
 
     def query_one(self, qs: dict[str, list[str]], key: str) -> str | None:
         values = qs.get(key)
         return values[0] if values else None
 
     def write_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -812,26 +928,34 @@ def make_receiver(config: Config, host: str, port: int) -> VitalsyncReceiver:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vitalsync local receiver")
-    parser.add_argument("--host", default=os.environ.get("VITALSYNC_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("VITALSYNC_PORT", "8790")))
-    parser.add_argument("--db", default=os.environ.get("VITALSYNC_DB", "vitalsync.sqlite3"))
+    parser.add_argument("--host", default=os.environ.get("VITALSYNC_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("VITALSYNC_PORT", "8790"))
+    )
+    parser.add_argument(
+        "--db", default=os.environ.get("VITALSYNC_DB", "vitalsync.sqlite3")
+    )
     parser.add_argument(
         "--public-base-url",
         default=os.environ.get("VITALSYNC_PUBLIC_BASE_URL", "http://127.0.0.1:8790"),
     )
-    parser.add_argument("--admin-token", default=os.environ.get("VITALSYNC_ADMIN_TOKEN"))
     parser.add_argument(
-        "--closed-registration",
+        "--admin-token", default=os.environ.get("VITALSYNC_ADMIN_TOKEN")
+    )
+    parser.add_argument(
+        "--open-registration",
         action="store_true",
-        help="Require admin token for /devices/register",
+        default=os.environ.get("VITALSYNC_OPEN_REGISTRATION") == "1",
+        help="Do not require admin token for /devices/register",
     )
     args = parser.parse_args()
     config = Config(
         db_path=args.db,
         public_base_url=args.public_base_url,
         admin_token=args.admin_token,
-        open_registration=not args.closed_registration,
+        open_registration=args.open_registration,
     )
+    logging.basicConfig(level=logging.INFO)
     httpd = make_receiver(config, args.host, args.port)
     print(f"Vitalsync receiver listening on http://{args.host}:{args.port}{API_PREFIX}")
     httpd.serve_forever()

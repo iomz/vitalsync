@@ -1,10 +1,17 @@
+---
 services:
-  receiver:
+  vitalsync-receiver:
+    container_name: vitalsync-receiver
     build:
-      context: .
-      dockerfile: receiver/Dockerfile
+      context: ./receiver
+      dockerfile: Dockerfile
     ports:
-      - "8790:8790"
-    environment:
-      VITALSYNC_HOST: "0.0.0.0"
-      VITALSYNC_PORT: "8790"
+      - "127.0.0.1:8790:8790"
+    env_file:
+      - ./receiver/.env
+    volumes:
+      - vitalsync-data:/data
+    restart: unless-stopped
+
+volumes:
+  vitalsync-data:

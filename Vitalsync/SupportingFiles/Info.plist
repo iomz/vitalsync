@@ -27,22 +27,24 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-		<key>NSHealthShareUsageDescription</key>
-		<string>Vitalsync reads selected Apple Health data so you can sync it to your configured Vitalsync receiver.</string>
-		<key>BGTaskSchedulerPermittedIdentifiers</key>
-		<array>
-			<string>io.sazanka.vitalsync.refresh</string>
-		</array>
-		<key>UIApplicationSceneManifest</key>
-		<dict>
-			<key>UIApplicationSupportsMultipleScenes</key>
-			<false/>
-		</dict>
-		<key>UIBackgroundModes</key>
-		<array>
-			<string>fetch</string>
-		</array>
-		<key>UILaunchScreen</key>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Vitalsync reads selected Apple Health data so you can sync it to your configured Vitalsync receiver.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Vitalsync does not write Apple Health data.</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>io.sazanka.vitalsync.refresh</string>
+	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>

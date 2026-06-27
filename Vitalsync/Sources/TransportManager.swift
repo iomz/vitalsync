@@ -332,9 +332,10 @@ final class TransportManager: NSObject, ObservableObject {
 
     // MARK: - Device registration
 
-    func register(deviceLabel: String) async throws {
+    func register(deviceLabel: String, registrationToken: String) async throws {
         var req = URLRequest(url: serverBase.appendingPathComponent("devices/register"))
         req.httpMethod = "POST"
+        req.setValue("Bearer \(registrationToken)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: String] = [
             "app": "Vitalsync",
@@ -344,7 +345,17 @@ final class TransportManager: NSObject, ObservableObject {
         ]
         req.httpBody = try JSONEncoder.vitalsync.encode(body)
 
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw TransportError.streamError("No HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            if let err = try? JSONDecoder.vitalsync.decode(ServerError.self, from: data) {
+                throw TransportError.httpError(http.statusCode, err.message)
+            }
+            throw TransportError.httpError(http.statusCode, HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+        }
+
         let resp = try JSONDecoder.vitalsync.decode(RegisterResponse.self, from: data)
         credentials.deviceId = resp.deviceId
         credentials.accessToken = resp.accessToken

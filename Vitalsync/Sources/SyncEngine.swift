@@ -122,7 +122,7 @@ final class SyncEngine: ObservableObject {
             var allDeleted: [VitalsyncTombstone] = []
 
             for group in typeGroups where group.enabled {
-                for hkType in group.sampleTypes {
+                for hkType in group.queryTypes {
                     guard let vitalsyncType = hkManager.vitalsyncSampleType(for: hkType) else { continue }
                     let qr = try await hkManager.queryIncremental(sampleType: hkType, vitalsyncType: vitalsyncType)
                     allRecords.append(contentsOf: qr.records)
