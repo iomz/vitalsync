@@ -10,8 +10,9 @@ services:
     env_file:
       - ./receiver/.env
     volumes:
-      - vitalsync-data:/data
+      - data:/data
     restart: unless-stopped
 
 volumes:
-  vitalsync-data:
+  data:
+    name: vitalsync-data

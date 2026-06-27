@@ -73,6 +73,9 @@ struct VitalsyncQueryResult {
     let sampleType: VitalsyncSampleType
     let records: [VitalsyncRecord]
     let tombstones: [VitalsyncTombstone]
+    let rawSampleCount: Int
+    let rawDeletedCount: Int
+    let newAnchor: HKQueryAnchor?
 }
 
 // MARK: - HealthKitManager
@@ -83,6 +86,7 @@ final class HealthKitManager: ObservableObject {
     private let anchors = AnchorStore()
 
     @Published var authorizationStatus: [String: HKAuthorizationStatus] = [:]
+    @Published var readAuthorizationRequestStatus: [String: HKAuthorizationRequestStatus] = [:]
     static var isHealthDataAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
     // MARK: Type groups
@@ -142,6 +146,7 @@ final class HealthKitManager: ObservableObject {
         let readTypes = authorizationReadTypes(for: enabled)
         try await store.requestAuthorization(toShare: [], read: readTypes)
         refreshAuthorizationStatus(for: enabled)
+        await refreshReadAuthorizationStatus(for: groups)
     }
 
     private func authorizationReadTypes(for groups: [VitalsyncTypeGroup]) -> Set<HKObjectType> {
@@ -156,6 +161,19 @@ final class HealthKitManager: ObservableObject {
             }
         }
         authorizationStatus = status
+    }
+
+    func refreshReadAuthorizationStatus(for groups: [VitalsyncTypeGroup]) async {
+        var status: [String: HKAuthorizationRequestStatus] = [:]
+        for group in groups {
+            guard !authorizationReadTypes(for: [group]).isEmpty else { continue }
+            do {
+                status[group.id] = try await authorizationRequestStatus(groups: [group])
+            } catch {
+                status[group.id] = .unknown
+            }
+        }
+        readAuthorizationRequestStatus = status
     }
 
     func enabledGroupsHaveDeniedStatus(_ groups: [VitalsyncTypeGroup]) -> Bool {
@@ -185,32 +203,36 @@ final class HealthKitManager: ObservableObject {
                     cont.resume(throwing: error)
                     return
                 }
-                Task {
-                    if let newAnchor {
-                        await self.anchors.save(newAnchor, for: anchorKey)
-                    }
-                    let records = (samples ?? []).compactMap {
-                        self.mapSample($0, to: vitalsyncType)
-                    }
-                    let tombstones = (deleted ?? []).map {
-                        VitalsyncTombstone(
-                            source: "apple_health",
-                            sourceId: $0.uuid.uuidString,
-                            sampleType: vitalsyncType,
-                            deletedAt: Date()
-                        )
-                    }
-                    // Log counts only — never log raw values
-                    log.info("Queried \(vitalsyncType.rawValue): \(records.count) records, \(tombstones.count) tombstones")
-                    cont.resume(returning: VitalsyncQueryResult(
-                        sampleType: vitalsyncType,
-                        records: records,
-                        tombstones: tombstones
-                    ))
+                let rawSamples = samples ?? []
+                let rawDeleted = deleted ?? []
+                let records = rawSamples.compactMap {
+                    self.mapSample($0, to: vitalsyncType)
                 }
+                let tombstones = rawDeleted.map {
+                    VitalsyncTombstone(
+                        source: "apple_health",
+                        sourceId: $0.uuid.uuidString,
+                        sampleType: vitalsyncType,
+                        deletedAt: Date()
+                    )
+                }
+                log.info("Queried \(vitalsyncType.rawValue): \(records.count) records from \(rawSamples.count) samples, \(tombstones.count) tombstones from \(rawDeleted.count) deletes")
+                cont.resume(returning: VitalsyncQueryResult(
+                    sampleType: vitalsyncType,
+                    records: records,
+                    tombstones: tombstones,
+                    rawSampleCount: rawSamples.count,
+                    rawDeletedCount: rawDeleted.count,
+                    newAnchor: newAnchor
+                ))
             }
             store.execute(query)
         }
+    }
+
+    func commitAnchor(for result: VitalsyncQueryResult) async {
+        guard let newAnchor = result.newAnchor else { return }
+        await anchors.save(newAnchor, for: result.sampleType.rawValue)
     }
 
     // MARK: Debug anchor reset

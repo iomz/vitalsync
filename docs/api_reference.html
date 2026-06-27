@@ -60,10 +60,11 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
 <div class="layout">
 <nav>
   <h1>Vitalsync</h1>
-  <p>Server API · v1 · sazanka.io</p>
+  <p>Server API · v1 · receiver.example.com</p>
   <div class="nav-group">
     <div class="nav-label">Auth</div>
     <a href="#devices">Devices</a>
+    <a href="#clients">Clients</a>
     <a href="#tokens">Tokens</a>
   </div>
   <div class="nav-group">
@@ -100,18 +101,20 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Requires admin token or open registration (config-dependent). Returns device_id + long-lived refresh_token + initial access_token.</div>
+    <div class="note">Registration is closed by default. Use a one-time iphone pairing token, or use admin token/open registration for maintenance and local testing. Returns device_id + long-lived refresh_token + initial access_token.</div>
     <h3>Request body</h3>
     <table class="field-table">
       <tr><th>Field</th><th>Type</th><th></th><th>Description</th></tr>
-      <tr><td class="fname">app</td><td class="ftype">string</td><td><span class="req">required</span></td><td>"Vitalsync"</td></tr>
-      <tr><td class="fname">device_label</td><td class="ftype">string</td><td><span class="req">required</span></td><td>Human-readable label, e.g. "Iori iPhone"</td></tr>
+      <tr><td class="fname">schema</td><td class="ftype">string</td><td><span class="req">required</span></td><td>"vitalsync.device_registration.v1"</td></tr>
+      <tr><td class="fname">pairing_token</td><td class="ftype">string</td><td><span class="opt">optional</span></td><td>Required for normal closed-registration iPhone pairing</td></tr>
+      <tr><td class="fname">device_label</td><td class="ftype">string</td><td><span class="req">required</span></td><td>Human-readable label, e.g. "My iPhone"</td></tr>
       <tr><td class="fname">platform</td><td class="ftype">string</td><td><span class="req">required</span></td><td>"iOS"</td></tr>
       <tr><td class="fname">app_version</td><td class="ftype">string</td><td><span class="req">required</span></td><td>Semver string, e.g. "0.1.0"</td></tr>
     </table>
     <pre>{
-  <span class="key">"app"</span>: <span class="str">"Vitalsync"</span>,
-  <span class="key">"device_label"</span>: <span class="str">"Iori iPhone"</span>,
+  <span class="key">"schema"</span>: <span class="str">"vitalsync.device_registration.v1"</span>,
+  <span class="key">"pairing_token"</span>: <span class="str">"&lt;PAIRING_TOKEN&gt;"</span>,
+  <span class="key">"device_label"</span>: <span class="str">"My iPhone"</span>,
   <span class="key">"platform"</span>: <span class="str">"iOS"</span>,
   <span class="key">"app_version"</span>: <span class="str">"0.1.0"</span>
 }</pre>
@@ -120,6 +123,7 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
   <span class="key">"device_id"</span>:     <span class="str">"dev_01J..."</span>,
   <span class="key">"refresh_token"</span>: <span class="str">"vitalsync_refresh_..."</span>,
   <span class="key">"access_token"</span>:  <span class="str">"vitalsync_access_..."</span>,
+  <span class="key">"scopes"</span>:        [<span class="str">"write:healthkit"</span>],
   <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T12:00:00Z"</span>
 }</pre>
   </div>
@@ -142,6 +146,37 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
 </div>
 </section>
 
+<section id="clients">
+<h2>Client registration</h2>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/clients/register</span>
+    <span class="ep-desc">Register a read-only API client</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Use an ingest pairing token with <code>read:healthkit</code>. Clients are API consumers, not HealthKit producer devices.</div>
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"schema"</span>:        <span class="str">"vitalsync.client_registration.v1"</span>,
+  <span class="key">"pairing_token"</span>: <span class="str">"vitalsync_pair_..."</span>,
+  <span class="key">"client_type"</span>:   <span class="str">"ingest"</span>,
+  <span class="key">"client_label"</span>:  <span class="str">"ingest on receiver.example.com"</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"client_id"</span>:     <span class="str">"client_01J..."</span>,
+  <span class="key">"client_type"</span>:   <span class="str">"ingest"</span>,
+  <span class="key">"refresh_token"</span>: <span class="str">"vitalsync_refresh_..."</span>,
+  <span class="key">"access_token"</span>:  <span class="str">"vitalsync_access_..."</span>,
+  <span class="key">"scopes"</span>:        [<span class="str">"read:healthkit"</span>],
+  <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T12:00:00Z"</span>
+}</pre>
+  </div>
+</div>
+</section>
+
 <section id="tokens">
 <h2>Token endpoints</h2>
 <div class="endpoint">
@@ -155,14 +190,14 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
     <div class="note">Session token lifetime: 5 minutes. Used as URL query param on WebTransport connection (browser WT API has limited custom header support).</div>
     <h3>Request body</h3>
     <pre>{
-  <span class="key">"device_id"</span>: <span class="str">"dev_01J..."</span>,
+  <span class="key">"device_id"</span>: <span class="str">"&lt;DEVICE_ID&gt;"</span>,
   <span class="key">"capability"</span>: <span class="str">"webtransport_upload"</span>
 }</pre>
     <h3>Response 200</h3>
     <pre>{
-  <span class="key">"session_token"</span>: <span class="str">"vitalsync_wt_..."</span>,
+  <span class="key">"session_token"</span>: <span class="str">"&lt;SESSION_TOKEN&gt;"</span>,
   <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T10:17:00Z"</span>,
-  <span class="key">"transport_url"</span>: <span class="str">"https://sazanka.io/vitalsync/v1/transport?token=vitalsync_wt_..."</span>
+  <span class="key">"transport_url"</span>: <span class="str">"https://receiver.example.com/vitalsync/v1/transport?token=&lt;SESSION_TOKEN&gt;"</span>
 }</pre>
   </div>
 </div>
@@ -177,12 +212,12 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
   <div class="ep-body">
     <h3>Request body</h3>
     <pre>{
-  <span class="key">"refresh_token"</span>: <span class="str">"vitalsync_refresh_..."</span>,
-  <span class="key">"device_id"</span>:     <span class="str">"dev_01J..."</span>
+  <span class="key">"refresh_token"</span>: <span class="str">"&lt;REFRESH_TOKEN&gt;"</span>,
+  <span class="key">"device_id"</span>:     <span class="str">"&lt;DEVICE_ID&gt;"</span>
 }</pre>
     <h3>Response 200</h3>
     <pre>{
-  <span class="key">"access_token"</span>: <span class="str">"vitalsync_access_..."</span>,
+  <span class="key">"access_token"</span>: <span class="str">"&lt;ACCESS_TOKEN&gt;"</span>,
   <span class="key">"expires_at"</span>:   <span class="str">"2026-06-26T11:00:00Z"</span>
 }</pre>
   </div>
@@ -191,14 +226,14 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
 
 <section id="transport">
 <h2>WebTransport upload</h2>
-<div class="note">Endpoint: <code>https://sazanka.io/vitalsync/v1/transport?token=&lt;session-token&gt;</code><br>Uses reliable bidirectional streams. Health payloads must not use datagrams.</div>
+<div class="note">Endpoint: <code>https://receiver.example.com/vitalsync/v1/transport?token=&lt;session-token&gt;</code><br>Uses reliable bidirectional streams. Health payloads must not use datagrams.</div>
 
 <h3>Control stream — hello</h3>
 <pre><span class="comment">// App → Server (first message on control stream)</span>
 {
   <span class="key">"type"</span>:        <span class="str">"hello"</span>,
   <span class="key">"schema"</span>:      <span class="str">"vitalsync.control.v1"</span>,
-  <span class="key">"device_id"</span>:   <span class="str">"dev_01J..."</span>,
+  <span class="key">"device_id"</span>:   <span class="str">"&lt;DEVICE_ID&gt;"</span>,
   <span class="key">"app_version"</span>: <span class="str">"0.1.0"</span>,
   <span class="key">"supports"</span>:    [<span class="str">"health.batch.v1"</span>, <span class="str">"tombstone.v1"</span>]
 }
@@ -242,7 +277,7 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Exact same batch JSON schema as WebTransport. Idempotency-Key header is required and must equal batch_id. Auth via Bearer access token.</div>
+    <div class="note">Exact same batch JSON schema as WebTransport. Idempotency-Key header is required and must equal batch_id. Auth requires a Bearer access token with <code>write:healthkit</code>.</div>
     <h3>Headers</h3>
     <table class="field-table">
       <tr><th>Header</th><th>Value</th></tr>
@@ -313,7 +348,7 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Requires consumer token with appropriate read scope.</div>
+    <div class="note">Requires <code>read:healthkit</code> or a legacy consumer token with the appropriate granular read scope.</div>
     <h3>Query parameters</h3>
     <table class="field-table">
       <tr><th>Param</th><th>Type</th><th></th><th>Description</th></tr>
@@ -346,7 +381,7 @@ Authorization: Bearer vitalsync_consumer_...</pre>
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Returns raw batch envelopes as stored. Useful for reprocessing or debugging. Consumer token required.</div>
+    <div class="note">Returns raw batch envelopes as stored. Useful for reprocessing or debugging. Requires <code>read:healthkit</code>.</div>
     <h3>Query parameters</h3>
     <table class="field-table">
       <tr><th>Param</th><th>Type</th><th></th><th>Description</th></tr>
@@ -366,6 +401,33 @@ Authorization: Bearer vitalsync_consumer_...</pre>
 <div class="endpoint">
   <div class="ep-head" onclick="toggle(this)">
     <span class="method POST">POST</span>
+    <span class="ep-path">/vitalsync/v1/admin/pairing-tokens</span>
+    <span class="ep-desc">Issue a one-time registration token</span>
+    <span class="chevron">▼</span>
+  </div>
+  <div class="ep-body">
+    <div class="note">Requires <code>admin:tokens</code>. Stores only token hash. Valid client types are <code>iphone</code> with <code>write:healthkit</code> and <code>ingest</code> with <code>read:healthkit</code>.</div>
+    <h3>Request body</h3>
+    <pre>{
+  <span class="key">"schema"</span>:      <span class="str">"vitalsync.pairing_token_request.v1"</span>,
+  <span class="key">"client_type"</span>: <span class="str">"iphone"</span>,
+  <span class="key">"scopes"</span>:      [<span class="str">"write:healthkit"</span>],
+  <span class="key">"ttl_seconds"</span>: <span class="num">600</span>
+}</pre>
+    <h3>Response 200</h3>
+    <pre>{
+  <span class="key">"schema"</span>:           <span class="str">"vitalsync.pairing_token.v1"</span>,
+  <span class="key">"pairing_token"</span>:    <span class="str">"&lt;PAIRING_TOKEN&gt;"</span>,
+  <span class="key">"client_type"</span>:      <span class="str">"iphone"</span>,
+  <span class="key">"scopes"</span>:           [<span class="str">"write:healthkit"</span>],
+  <span class="key">"expires_at"</span>:       <span class="str">"2026-06-27T15:30:00Z"</span>,
+  <span class="key">"registration_url"</span>: <span class="str">"vitalsync://register?base_url=..."</span>
+}</pre>
+  </div>
+</div>
+<div class="endpoint">
+  <div class="ep-head" onclick="toggle(this)">
+    <span class="method POST">POST</span>
     <span class="ep-path">/vitalsync/v1/devices/{device_id}/revoke</span>
     <span class="ep-desc">Admin-revoke a device</span>
     <span class="chevron">▼</span>
@@ -382,7 +444,7 @@ Authorization: Bearer vitalsync_consumer_...</pre>
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Requires <code>admin:devices</code> scope. Deletes all healthkit_batches and healthkit_records rows for device. Irreversible.</div>
+    <div class="note">Requires <code>admin:devices</code> scope. Deletes device registration, tokens, healthkit_batches, and healthkit_records rows for device. Irreversible.</div>
   </div>
 </div>
 <div class="endpoint">
@@ -425,7 +487,8 @@ Authorization: Bearer vitalsync_consumer_...</pre>
 <section id="scopes">
 <h2>Token scopes</h2>
 <div class="scope-list">
-  <span class="scope">upload:health</span>
+  <span class="scope">write:healthkit</span>
+  <span class="scope">read:healthkit</span>
   <span class="scope">read:sleep</span>
   <span class="scope">read:activity</span>
   <span class="scope">read:body</span>
@@ -437,8 +500,9 @@ Authorization: Bearer vitalsync_consumer_...</pre>
 </div>
 <table class="field-table" style="margin-top:1rem">
   <tr><th>Role</th><th>Scopes</th></tr>
-  <tr><td>Device token</td><td><code>upload:health</code></td></tr>
-  <tr><td>Consumer token</td><td>one or more <code>read:*</code> scopes</td></tr>
+  <tr><td>Device token</td><td><code>write:healthkit</code></td></tr>
+  <tr><td>Client token</td><td><code>read:healthkit</code></td></tr>
+  <tr><td>Legacy consumer token</td><td>one or more granular <code>read:*</code> scopes, or <code>read:healthkit</code></td></tr>
   <tr><td>Admin token</td><td><code>admin:tokens</code> <code>admin:devices</code></td></tr>
 </table>
 </section>
@@ -488,9 +552,40 @@ healthkit_devices (
 <span class="comment">-- Tokens (hash only — never store plaintext)</span>
 healthkit_tokens (
   token_hash  text primary key,
-  device_id   text not null,
+  device_id   text,
   token_type  text not null,  <span class="comment">-- 'refresh' | 'access' | 'session' | 'consumer'</span>
+  scopes_json json not null,
   expires_at  timestamptz,
+  revoked_at  timestamptz
+)
+
+<span class="comment">-- One-time pairing tokens (hash only — never store plaintext)</span>
+pairing_tokens (
+  token_hash  text primary key,
+  client_type text not null,
+  scopes_json json not null,
+  created_at  timestamptz not null,
+  expires_at  timestamptz not null,
+  consumed_at timestamptz
+)
+
+<span class="comment">-- API clients</span>
+clients (
+  client_id    text primary key,
+  client_type  text not null,
+  client_label text,
+  created_at   timestamptz not null,
+  revoked_at   timestamptz
+)
+
+<span class="comment">-- Client tokens (hash only — never store plaintext)</span>
+client_tokens (
+  token_hash  text primary key,
+  client_id   text not null,
+  token_type  text not null,
+  scopes_json json not null,
+  expires_at  timestamptz,
+  created_at  timestamptz not null,
   revoked_at  timestamptz
 )</pre>
 </section>

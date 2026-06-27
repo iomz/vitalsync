@@ -4,6 +4,7 @@ enum VitalsyncSchema {
     static let control = "vitalsync.control.v1"
     static let batch = "vitalsync.batch.v1"
     static let batches = "vitalsync.batches.v1"
+    static let deviceRegistration = "vitalsync.device_registration.v1"
     static let record = "vitalsync.record.v1"
     static let records = "vitalsync.records.v1"
 }
@@ -206,11 +207,53 @@ struct RegisterResponse: Codable {
     let refreshToken: String
     let accessToken: String
     let expiresAt: Date
+
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
         case refreshToken = "refresh_token"
         case accessToken = "access_token"
         case expiresAt = "expires_at"
+    }
+
+    init(deviceId: String, refreshToken: String, accessToken: String, expiresAt: Date) {
+        self.deviceId = deviceId
+        self.refreshToken = refreshToken
+        self.accessToken = accessToken
+        self.expiresAt = expiresAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        refreshToken = try container.decode(String.self, forKey: .refreshToken)
+        accessToken = try container.decode(String.self, forKey: .accessToken)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+            ?? Date(timeIntervalSinceNow: 3600)
+    }
+}
+
+struct AccessTokenResponse: Codable {
+    let accessToken: String
+    let expiresAt: Date
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case expiresAt = "expires_at"
+    }
+}
+
+struct DeviceRegistrationRequest: Codable {
+    let schema: String
+    let pairingToken: String
+    let deviceLabel: String
+    let platform: String
+    let appVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case schema
+        case pairingToken = "pairing_token"
+        case deviceLabel = "device_label"
+        case platform
+        case appVersion = "app_version"
     }
 }
 

@@ -75,6 +75,7 @@ final class AppDependencies: ObservableObject {
     let transport: TransportManager
     let syncEngine: SyncEngine
     @Published var enabledTypeGroups: [VitalsyncTypeGroup] = HealthKitManager.typeGroups
+    @Published var pendingPairingToken: String?
 
     private init() {
         transport = TransportManager(credentials: credentials)
@@ -84,6 +85,29 @@ final class AppDependencies: ObservableObject {
     func performBackgroundSync() async {
         await syncEngine.performBackgroundSync(typeGroups: enabledTypeGroups)
     }
+
+    func handleRegistrationURL(_ url: URL) {
+        guard
+            url.scheme == "vitalsync",
+            url.host == "register",
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return }
+
+        for item in components.queryItems ?? [] {
+            switch item.name {
+            case "base_url":
+                if let value = item.value,
+                   let apiBaseURL = TransportManager.validatedAPIBaseURLString(from: value) {
+                    transport.serverBaseURLString = apiBaseURL
+                }
+            case "token":
+                pendingPairingToken = item.value
+            default:
+                break
+            }
+        }
+    }
+
 }
 
 // MARK: - Root app
@@ -98,7 +122,11 @@ struct VitalsyncApp: App {
                 .environmentObject(deps)
                 .environmentObject(deps.syncEngine)
                 .environmentObject(deps.transport)
+                .onOpenURL { url in
+                    deps.handleRegistrationURL(url)
+                }
                 .task {
+                    await deps.transport.refreshConnectionStatus()
                     deps.syncEngine.scheduleBackgroundSync()
                 }
         }
@@ -137,7 +165,7 @@ struct StatusView: View {
             List {
                 Section("HealthKit") {
                     ForEach(HealthKitManager.typeGroups) { group in
-                        let status = deps.hkManager.authorizationStatus[group.id]
+                        let status = deps.hkManager.readAuthorizationRequestStatus[group.id]
                         HStack {
                             Text(group.displayName)
                             Spacer()
@@ -148,8 +176,11 @@ struct StatusView: View {
                     }
                 }
                 Section("Receiver") {
-                    VitalsyncStatusRow(label: "Connection", value: transport.isConnected ? "Connected" : "Disconnected",
-                                 ok: transport.isConnected)
+                    VitalsyncStatusRow(
+                        label: "Connection",
+                        value: transport.connectionStatusText,
+                        ok: transport.isConnected ? true : (transport.serverReachable == false ? false : nil)
+                    )
                     if let d = engine.lastSyncDate {
                         VitalsyncStatusRow(label: "Last sync", value: d.formatted(.relative(presentation: .named)), ok: true)
                     } else {
@@ -162,22 +193,28 @@ struct StatusView: View {
                 }
             }
             .navigationTitle("Status")
+            .task {
+                await deps.hkManager.refreshReadAuthorizationStatus(for: HealthKitManager.typeGroups)
+                await transport.refreshConnectionStatus()
+            }
         }
     }
 
-    private func statusLabel(_ s: HKAuthorizationStatus?) -> String {
+    private func statusLabel(_ s: HKAuthorizationRequestStatus?) -> String {
         switch s {
-        case .sharingAuthorized: return "Authorized"
-        case .sharingDenied:     return "Denied"
-        default:                 return "Not determined"
+        case .unnecessary:   return "Ready"
+        case .shouldRequest: return "Needs access"
+        case .unknown:       return "Unknown"
+        default:             return "Unknown"
         }
     }
 
-    private func statusColor(_ s: HKAuthorizationStatus?) -> Color {
+    private func statusColor(_ s: HKAuthorizationRequestStatus?) -> Color {
         switch s {
-        case .sharingAuthorized: return .green
-        case .sharingDenied:     return .red
-        default:                 return .secondary
+        case .unnecessary:   return .green
+        case .shouldRequest: return .orange
+        case .unknown:       return .secondary
+        default:             return .secondary
         }
     }
 }
@@ -248,7 +285,7 @@ struct DataTypesView: View {
             .task {
                 requestedPermissionGroupIDs = loadRequestedPermissionGroupIDs()
                 await refreshPermissionRequestStatus()
-                deps.hkManager.refreshAuthorizationStatus(for: deps.enabledTypeGroups)
+                await deps.hkManager.refreshReadAuthorizationStatus(for: deps.enabledTypeGroups)
             }
             .alert(item: $permissionDialog) { dialog in
                 switch dialog.action {
@@ -277,7 +314,7 @@ struct DataTypesView: View {
     }
 
     private var shouldShowPermissionRequest: Bool {
-        permissionRequestStatus == .shouldRequest && !enabledPermissionGroupIDs.isSubset(of: requestedPermissionGroupIDs)
+        permissionRequestStatus == .shouldRequest
     }
 
     private var shouldShowManageHealthAccess: Bool {
@@ -310,6 +347,7 @@ struct DataTypesView: View {
         permissionRequestStatus = try? await deps.hkManager.authorizationRequestStatus(
             groups: deps.enabledTypeGroups
         )
+        await deps.hkManager.refreshReadAuthorizationStatus(for: deps.enabledTypeGroups)
         if permissionRequestStatus == .unnecessary {
             markEnabledGroupsPermissionRequested()
         }
@@ -375,6 +413,7 @@ struct SyncView: View {
     @EnvironmentObject var deps: AppDependencies
     @EnvironmentObject var engine: SyncEngine
     @State private var showingDebugBundle = false
+    @State private var showResetSyncHistory = false
 
     var body: some View {
         NavigationStack {
@@ -384,6 +423,16 @@ struct SyncView: View {
                         Task { await engine.syncNow(typeGroups: deps.enabledTypeGroups) }
                     }
                     .disabled(engine.isSyncing)
+                    if let syncStatus = engine.syncStatus {
+                        Text(syncStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("Last attempt") {
+                    LabeledContent("Records", value: "\(engine.lastRecordCount)")
+                    LabeledContent("Deleted", value: "\(engine.lastDeletedCount)")
+                    LabeledContent("Batches", value: "\(engine.lastBatchCount)")
                 }
                 Section("Background sync") {
                     Toggle("Enable background sync", isOn: $engine.backgroundSyncEnabled)
@@ -397,9 +446,27 @@ struct SyncView: View {
                 }
                 Section("Debug") {
                     Button("Export debug bundle") { showingDebugBundle = true }
+                    Button("Reset sync history", role: .destructive) { showResetSyncHistory = true }
+                        .disabled(engine.isSyncing)
                 }
             }
             .navigationTitle("Sync")
+            .confirmationDialog(
+                "Reset sync history?",
+                isPresented: $showResetSyncHistory,
+                titleVisibility: .visible
+            ) {
+                Button("Reset", role: .destructive) {
+                    Task {
+                        await engine.resetSyncHistory(
+                            typeGroups: deps.enabledTypeGroups.filter(\.enabled)
+                        )
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The next sync will re-query all enabled Health data from HealthKit.")
+            }
         }
         .sheet(isPresented: $showingDebugBundle) {
             DebugBundleView()
@@ -413,34 +480,37 @@ struct AccountView: View {
     @EnvironmentObject var deps: AppDependencies
     @EnvironmentObject var transport: TransportManager
     @State private var deviceLabel = ""
+    @State private var serverBaseURLDraft = ""
     @State private var defaultDeviceLabel = Self.currentDefaultDeviceLabel
     @State private var credentialStatus = CredentialStatus()
-    @State private var registrationToken = ""
+    @State private var pairingToken = ""
     @State private var registrationError: String?
     @State private var isRegistering = false
     @State private var showRevoke = false
+    @FocusState private var focusedField: Field?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Receiver") {
-                    TextField("API base URL", text: $transport.serverBaseURLString)
+                    TextField("API base URL", text: $serverBaseURLDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .keyboardType(.URL)
+                        .keyboardType(.asciiCapable)
+                        .focused($focusedField, equals: .serverBaseURL)
+                        .onSubmit(commitServerBaseURL)
                 }
                 Section("Device") {
                     if let id = credentialStatus.deviceId {
                         LabeledContent("Device ID", value: String(id.prefix(16)) + "…")
                     } else {
                         TextField("Device label", text: $deviceLabel, prompt: Text(defaultDeviceLabel))
-                        SecureField("Registration token", text: $registrationToken)
-                            .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                        PairingTokenField(token: $pairingToken)
                         Button(isRegistering ? "Registering…" : "Register device") {
                             Task { await registerDevice() }
                         }
-                        .disabled(registrationToken.isEmpty || isRegistering)
+                        .disabled(trimmedPairingToken.isEmpty || isRegistering)
                         if let registrationError {
                             Text(registrationError)
                                 .font(.caption)
@@ -453,22 +523,50 @@ struct AccountView: View {
                     LabeledContent("Refresh token", value: credentialStatus.hasRefreshToken ? "Present" : "None")
                     Button("Revoke device", role: .destructive) { showRevoke = true }
                         .disabled(credentialStatus.deviceId == nil)
+                    if let registrationError {
+                        Text(registrationError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Account")
+            .onChange(of: focusedField) { _, newValue in
+                if newValue != .serverBaseURL {
+                    commitServerBaseURL()
+                }
+            }
             .confirmationDialog("Revoke this device?", isPresented: $showRevoke, titleVisibility: .visible) {
                 Button("Revoke", role: .destructive) {
-                    deps.credentials.clear()
-                    refreshCredentialStatus()
+                    Task { await revokeDevice() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This will remove all credentials. You'll need to re-register.")
             }
             .task {
+                serverBaseURLDraft = transport.serverBaseURLString
                 defaultDeviceLabel = Self.currentDefaultDeviceLabel
+                applyPendingPairingToken()
                 refreshCredentialStatus()
             }
+            .onChange(of: transport.serverBaseURLString) { _, newValue in
+                guard focusedField != .serverBaseURL else { return }
+                serverBaseURLDraft = newValue
+            }
+            .onChange(of: deps.pendingPairingToken) { _, _ in
+                applyPendingPairingToken()
+            }
+        }
+    }
+
+    private func revokeDevice() async {
+        registrationError = nil
+        do {
+            try await transport.revokeDevice()
+            refreshCredentialStatus()
+        } catch {
+            registrationError = error.localizedDescription
         }
     }
 
@@ -482,7 +580,12 @@ struct AccountView: View {
         return label.isEmpty ? defaultDeviceLabel : label
     }
 
+    private var trimmedPairingToken: String {
+        pairingToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func registerDevice() async {
+        commitServerBaseURL()
         isRegistering = true
         registrationError = nil
         defer { isRegistering = false }
@@ -490,17 +593,40 @@ struct AccountView: View {
         do {
             try await deps.transport.register(
                 deviceLabel: registrationDeviceLabel,
-                registrationToken: registrationToken
+                pairingToken: trimmedPairingToken
             )
-            registrationToken = ""
+            pairingToken = ""
+            deps.pendingPairingToken = nil
             refreshCredentialStatus()
         } catch {
             registrationError = error.localizedDescription
         }
     }
 
+    private func applyPendingPairingToken() {
+        guard let token = deps.pendingPairingToken else { return }
+        pairingToken = token
+    }
+
+    private func commitServerBaseURL() {
+        let trimmed = serverBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != transport.serverBaseURLString else { return }
+        guard let apiBaseURL = TransportManager.validatedAPIBaseURLString(from: trimmed) else {
+            registrationError = "Invalid receiver API base URL."
+            serverBaseURLDraft = transport.serverBaseURLString
+            return
+        }
+        registrationError = nil
+        serverBaseURLDraft = apiBaseURL
+        transport.serverBaseURLString = apiBaseURL
+    }
+
     private func refreshCredentialStatus() {
         credentialStatus = CredentialStatus(credentials: deps.credentials)
+    }
+
+    private enum Field: Hashable {
+        case serverBaseURL
     }
 
     private struct CredentialStatus {
@@ -518,6 +644,42 @@ struct AccountView: View {
     }
 }
 
+struct PairingTokenField: View {
+    @Binding var token: String
+    @State private var isRevealed = false
+
+    var body: some View {
+        HStack {
+            ZStack(alignment: .leading) {
+                if token.isEmpty {
+                    Text("Pairing token")
+                        .foregroundStyle(.secondary)
+                }
+                TextField("", text: $token)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(isRevealed ? .primary : .clear)
+                    .submitLabel(.done)
+                if !isRevealed && !token.isEmpty {
+                    Text(String(repeating: "•", count: token.count))
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            Button {
+                isRevealed.toggle()
+            } label: {
+                Image(systemName: isRevealed ? "eye.slash" : "eye")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isRevealed ? "Hide pairing token" : "Reveal pairing token")
+        }
+    }
+}
+
 // MARK: - Debug bundle view (metadata only, no raw values)
 
 struct DebugBundleView: View {
@@ -531,8 +693,11 @@ struct DebugBundleView: View {
         Generated: \(Date().formatted())
         Device ID: \(deps.credentials.deviceId ?? "not registered")
         Last sync: \(engine.lastSyncDate?.formatted() ?? "never")
+        Last records: \(engine.lastRecordCount)
+        Last deleted: \(engine.lastDeletedCount)
         Last batch count: \(engine.lastBatchCount)
         Pending batches: \(engine.pendingCount)
+        Sync status: \(engine.syncStatus ?? "idle")
         Last error: \(engine.lastError ?? "none")
 
         [Raw health values are excluded from debug bundles]

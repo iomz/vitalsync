@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import HealthKit
 import OSLog
 
 private let log = Logger(subsystem: "io.sazanka.vitalsync", category: "SyncEngine")
@@ -9,6 +10,9 @@ private let log = Logger(subsystem: "io.sazanka.vitalsync", category: "SyncEngin
 enum SyncError: LocalizedError {
     case deviceNotRegistered
     case batchTooLarge
+    case healthDataUnavailable
+    case healthAuthorizationNotDetermined
+    case unmappedHealthSamples(VitalsyncSampleType, Int, Int)
     case serverRejected(ServerError)
     case transportUnavailable
 
@@ -16,6 +20,10 @@ enum SyncError: LocalizedError {
         switch self {
         case .deviceNotRegistered:   return "Device not registered with receiver."
         case .batchTooLarge:         return "Batch too large even after split."
+        case .healthDataUnavailable: return "Health data is not available on this device."
+        case .healthAuthorizationNotDetermined: return "Health access is not authorized. Open Data types and grant Health access."
+        case .unmappedHealthSamples(let sampleType, let raw, let mapped):
+            return "Could not map all \(sampleType.rawValue) samples (\(mapped) of \(raw) mapped)."
         case .serverRejected(let e): return "Receiver error: \(e.message)"
         case .transportUnavailable:  return "Transport unavailable."
         }
@@ -81,7 +89,10 @@ final class SyncEngine: ObservableObject {
     @Published var lastSyncDate: Date?
     @Published var lastError: String?
     @Published var lastBatchCount: Int = 0
+    @Published var lastRecordCount: Int = 0
+    @Published var lastDeletedCount: Int = 0
     @Published var pendingCount: Int = 0
+    @Published var syncStatus: String?
     @Published var backgroundSyncEnabled: Bool {
         didSet {
             UserDefaults.standard.set(backgroundSyncEnabled, forKey: Self.backgroundSyncEnabledKey)
@@ -114,17 +125,27 @@ final class SyncEngine: ObservableObject {
         guard !isSyncing else { return }
         isSyncing = true
         lastError = nil
+        syncStatus = "Preparing"
         var result = SyncResult()
 
         do {
+            let enabledGroups = typeGroups.filter(\.enabled)
+            try await ensureHealthAuthorization(for: enabledGroups)
+
             // 1. Query all enabled type groups incrementally
             var allRecords: [VitalsyncRecord] = []
             var allDeleted: [VitalsyncTombstone] = []
+            var queryResults: [VitalsyncQueryResult] = []
 
-            for group in typeGroups where group.enabled {
+            for group in enabledGroups {
                 for hkType in group.queryTypes {
                     guard let vitalsyncType = hkManager.vitalsyncSampleType(for: hkType) else { continue }
+                    syncStatus = "Querying \(vitalsyncType.rawValue)"
                     let qr = try await hkManager.queryIncremental(sampleType: hkType, vitalsyncType: vitalsyncType)
+                    guard qr.rawSampleCount == qr.records.count else {
+                        throw SyncError.unmappedHealthSamples(vitalsyncType, qr.rawSampleCount, qr.records.count)
+                    }
+                    queryResults.append(qr)
                     allRecords.append(contentsOf: qr.records)
                     allDeleted.append(contentsOf: qr.tombstones)
                 }
@@ -132,16 +153,26 @@ final class SyncEngine: ObservableObject {
 
             result.totalRecords = allRecords.count
             result.totalDeleted = allDeleted.count
+            lastRecordCount = result.totalRecords
+            lastDeletedCount = result.totalDeleted
 
             // 2. Split into batches ≤ 1 MiB, newest 30 days first
-            let batches = try splitIntoBatches(records: allRecords, deleted: allDeleted)
+            syncStatus = "Building batches"
+            let batches = try await splitIntoBatches(records: allRecords, deleted: allDeleted)
 
             // 3. Upload each batch (retry pending first, then new)
             let pending = try await queue.pendingBatches()
-            for batch in (pending + batches) {
+            let uploadBatches = pending + batches
+            for (index, batch) in uploadBatches.enumerated() {
+                syncStatus = "Uploading \(index + 1) of \(uploadBatches.count)"
                 try await uploadWithFallback(batch)
                 await queue.dequeue(batchId: batch.batchId)
                 result.batchesSent += 1
+            }
+
+            syncStatus = "Saving sync history"
+            for queryResult in queryResults {
+                await hkManager.commitAnchor(for: queryResult)
             }
 
             lastSyncDate = .now
@@ -154,7 +185,30 @@ final class SyncEngine: ObservableObject {
         }
 
         pendingCount = await queue.count()
+        syncStatus = nil
         isSyncing = false
+    }
+
+    private func ensureHealthAuthorization(for groups: [VitalsyncTypeGroup]) async throws {
+        guard HealthKitManager.isHealthDataAvailable else {
+            throw SyncError.healthDataUnavailable
+        }
+        guard !groups.isEmpty else { return }
+
+        let requestStatus = try await hkManager.authorizationRequestStatus(groups: groups)
+        switch requestStatus {
+        case .shouldRequest:
+            await hkManager.refreshReadAuthorizationStatus(for: groups)
+            throw SyncError.healthAuthorizationNotDetermined
+        case .unknown:
+            await hkManager.refreshReadAuthorizationStatus(for: groups)
+            throw SyncError.healthAuthorizationNotDetermined
+        case .unnecessary:
+            await hkManager.refreshReadAuthorizationStatus(for: groups)
+        @unknown default:
+            await hkManager.refreshReadAuthorizationStatus(for: groups)
+            throw SyncError.healthAuthorizationNotDetermined
+        }
     }
 
     // MARK: Retry pending
@@ -211,15 +265,24 @@ final class SyncEngine: ObservableObject {
 
     private func uploadWithFallback(_ batch: VitalsyncBatch) async throws {
         do {
-            _ = try await transport.uploadViaWebTransport(batch)
-        } catch TransportError.webTransportUnavailable {
-            log.info("WebTransport unavailable, falling back to HTTPS for batch \(batch.batchId)")
             try await transport.uploadViaHTTPS(batch)
         } catch {
-            // Enqueue for later retry
             try await queue.enqueue(batch)
             throw error
         }
+    }
+
+    func resetSyncHistory(typeGroups: [VitalsyncTypeGroup]) async {
+        for group in typeGroups {
+            await hkManager.resetAnchor(for: group)
+        }
+        lastSyncDate = nil
+        lastBatchCount = 0
+        lastRecordCount = 0
+        lastDeletedCount = 0
+        lastError = nil
+        syncStatus = nil
+        pendingCount = await queue.count()
     }
 
     // MARK: Batch splitting
@@ -227,12 +290,22 @@ final class SyncEngine: ObservableObject {
     private func splitIntoBatches(
         records: [VitalsyncRecord],
         deleted: [VitalsyncTombstone]
-    ) throws -> [VitalsyncBatch] {
+    ) async throws -> [VitalsyncBatch] {
         guard let deviceId = credentials.deviceId else { throw SyncError.deviceNotRegistered }
 
         var batches: [VitalsyncBatch] = []
         var chunk: [VitalsyncRecord] = []
         var deletedChunk: [VitalsyncTombstone] = []
+
+        func encodedSize(records: [VitalsyncRecord], deleted: [VitalsyncTombstone]) throws -> Int {
+            let batch = VitalsyncBatch.make(
+                deviceId: deviceId,
+                sequence: sequenceCounter + 1,
+                records: records,
+                deleted: deleted
+            )
+            return try JSONEncoder.vitalsync.encode(batch).count
+        }
 
         func flush() throws {
             guard !chunk.isEmpty || !deletedChunk.isEmpty else { return }
@@ -243,23 +316,41 @@ final class SyncEngine: ObservableObject {
                 records: chunk,
                 deleted: deletedChunk
             )
-            let size = (try? JSONEncoder.vitalsync.encode(batch).count) ?? 0
+            let size = try JSONEncoder.vitalsync.encode(batch).count
             guard size <= Self.maxBatchBytes else { throw SyncError.batchTooLarge }
             batches.append(batch)
             chunk = []
             deletedChunk = []
         }
 
-        for record in records {
-            chunk.append(record)
-            let probe = VitalsyncBatch.make(deviceId: deviceId, sequence: 0, records: chunk, deleted: [])
-            if let sz = try? JSONEncoder.vitalsync.encode(probe).count, sz > Self.maxBatchBytes {
-                chunk.removeLast()
+        for (index, record) in records.enumerated() {
+            let candidate = chunk + [record]
+            if try encodedSize(records: candidate, deleted: deletedChunk) > Self.maxBatchBytes {
                 try flush()
-                chunk.append(record)
+                guard try encodedSize(records: [record], deleted: []) <= Self.maxBatchBytes else {
+                    throw SyncError.batchTooLarge
+                }
+            }
+            chunk.append(record)
+            if index.isMultiple(of: 5_000) {
+                await Task.yield()
             }
         }
-        deletedChunk = deleted
+
+        for (index, tombstone) in deleted.enumerated() {
+            let candidate = deletedChunk + [tombstone]
+            if try encodedSize(records: chunk, deleted: candidate) > Self.maxBatchBytes {
+                try flush()
+                guard try encodedSize(records: [], deleted: [tombstone]) <= Self.maxBatchBytes else {
+                    throw SyncError.batchTooLarge
+                }
+            }
+            deletedChunk.append(tombstone)
+            if index.isMultiple(of: 5_000) {
+                await Task.yield()
+            }
+        }
+
         try flush()
         return batches
     }

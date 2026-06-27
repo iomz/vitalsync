@@ -4,9 +4,15 @@ build/
 *.xcuserstate
 xcuserdata/
 *.ipa
+Vitalsync/Resources/Assets.xcassets/Vitalsync.appiconset/
+*.sqlite
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+*.db
+*.db-*
+*.log
+logs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -14,3 +20,5 @@ __pycache__/
 
 # ignore user .env for the receiver
 receiver/.env
+receiver/.env.*
+!receiver/.env.example

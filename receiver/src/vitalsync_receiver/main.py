@@ -17,11 +17,12 @@ import os
 import secrets
 import sqlite3
 import threading
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Iterator
+from urllib.parse import parse_qs, quote, urlparse
 
 
 API_PREFIX = "/vitalsync/v1"
@@ -33,6 +34,9 @@ MAX_BATCH_BYTES = 1_048_576
 ACCESS_TOKEN_SECONDS = 3600
 SESSION_TOKEN_SECONDS = 300
 REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 365
+PAIRING_TOKEN_SECONDS = 600
+READ_HEALTHKIT_SCOPE = "read:healthkit"
+WRITE_HEALTHKIT_SCOPE = "write:healthkit"
 
 SAMPLE_TYPE_SCOPES = {
     "sleep_analysis": "read:sleep",
@@ -133,6 +137,28 @@ def make_cursor(offset: int, count: int, limit: int) -> str | None:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def validate_pairing_request(client_type: str, scopes: list[str]) -> None:
+    allowed = {
+        "iphone": {WRITE_HEALTHKIT_SCOPE},
+        "ingest": {READ_HEALTHKIT_SCOPE},
+    }
+    if client_type not in allowed:
+        raise ValueError("client_type must be iphone or ingest")
+    if not scopes:
+        raise ValueError("scopes must be a non-empty array")
+    if not set(scopes).issubset(allowed[client_type]):
+        raise ValueError("scopes are not allowed for client_type")
+
+
+def int_field(value: Any, default: int, *, field: str) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+
+
 class Config:
     def __init__(
         self,
@@ -156,12 +182,20 @@ class Store:
         self.lock = threading.RLock()
         self.init_db()
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
         with self.connect() as conn:
@@ -213,12 +247,41 @@ class Store:
                   revoked_at text
                 );
 
+                create table if not exists pairing_tokens (
+                  token_hash text primary key,
+                  client_type text not null,
+                  scopes_json text not null,
+                  created_at text not null,
+                  expires_at text not null,
+                  consumed_at text
+                );
+
+                create table if not exists clients (
+                  client_id text primary key,
+                  client_type text not null,
+                  client_label text,
+                  created_at text not null,
+                  revoked_at text
+                );
+
+                create table if not exists client_tokens (
+                  token_hash text primary key,
+                  client_id text not null,
+                  token_type text not null,
+                  scopes_json text not null,
+                  expires_at text,
+                  created_at text not null,
+                  revoked_at text
+                );
+
                 create index if not exists idx_records_type_time
                   on healthkit_records(sample_type, start_time, end_time);
                 create index if not exists idx_batches_received
                   on healthkit_batches(received_at);
                 create index if not exists idx_tokens_device
                   on healthkit_tokens(device_id);
+                create index if not exists idx_client_tokens_client
+                  on client_tokens(client_id);
                 """
             )
 
@@ -246,10 +309,93 @@ class Store:
             ),
         )
 
+    def insert_client_token(
+        self,
+        conn: sqlite3.Connection,
+        token: str,
+        client_id: str,
+        token_type: str,
+        scopes: list[str],
+        expires_at: dt.datetime | None,
+    ) -> None:
+        conn.execute(
+            """
+            insert into client_tokens
+              (token_hash, client_id, token_type, scopes_json, expires_at, created_at, revoked_at)
+            values (?, ?, ?, ?, ?, ?, null)
+            """,
+            (
+                token_hash(token),
+                client_id,
+                token_type,
+                json.dumps(scopes),
+                iso(expires_at) if expires_at else None,
+                iso(utcnow()),
+            ),
+        )
+
+    def create_pairing_token(
+        self, client_type: str, scopes: list[str], ttl_seconds: int
+    ) -> dict[str, Any]:
+        token = make_id("vitalsync_pair")
+        now = utcnow()
+        expires = now + dt.timedelta(seconds=ttl_seconds)
+        with self.lock, self.connect() as conn:
+            conn.execute(
+                """
+                insert into pairing_tokens
+                  (token_hash, client_type, scopes_json, created_at, expires_at, consumed_at)
+                values (?, ?, ?, ?, ?, null)
+                """,
+                (
+                    token_hash(token),
+                    client_type,
+                    json.dumps(scopes),
+                    iso(now),
+                    iso(expires),
+                ),
+            )
+        return {
+            "pairing_token": token,
+            "client_type": client_type,
+            "scopes": scopes,
+            "expires_at": iso(expires),
+        }
+
+    def consume_pairing_token(
+        self, conn: sqlite3.Connection, token: str, client_type: str
+    ) -> list[str] | None:
+        row = conn.execute(
+            """
+            select client_type, scopes_json, expires_at, consumed_at
+            from pairing_tokens
+            where token_hash = ?
+            """,
+            (token_hash(token),),
+        ).fetchone()
+        if not row or row["client_type"] != client_type or row["consumed_at"]:
+            return None
+        expires = dt.datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+        if expires <= utcnow():
+            return None
+        now = iso(utcnow())
+        cur = conn.execute(
+            """
+            update pairing_tokens
+            set consumed_at = ?
+            where token_hash = ? and consumed_at is null and expires_at > ?
+            """,
+            (now, token_hash(token), now),
+        )
+        if cur.rowcount != 1:
+            return None
+        return json.loads(row["scopes_json"])
+
     def validate_token(self, token: str, config: Config) -> dict[str, Any] | None:
         if config.admin_token and hmac.compare_digest(token, config.admin_token):
             return {
                 "device_id": None,
+                "client_id": None,
                 "token_type": "admin",
                 "scopes": ["admin:tokens", "admin:devices"],
             }
@@ -264,6 +410,32 @@ class Store:
                 (token_hash(token),),
             ).fetchone()
         if not row or row["revoked_at"] or row["device_revoked_at"]:
+            return self.validate_client_token(token)
+        if row["expires_at"]:
+            expires = dt.datetime.fromisoformat(
+                row["expires_at"].replace("Z", "+00:00")
+            )
+            if expires <= utcnow():
+                return self.validate_client_token(token)
+        return {
+            "device_id": row["device_id"],
+            "client_id": None,
+            "token_type": row["token_type"],
+            "scopes": json.loads(row["scopes_json"]),
+        }
+
+    def validate_client_token(self, token: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select t.*, c.revoked_at as client_revoked_at
+                from client_tokens t
+                join clients c on c.client_id = t.client_id
+                where t.token_hash = ?
+                """,
+                (token_hash(token),),
+            ).fetchone()
+        if not row or row["revoked_at"] or row["client_revoked_at"]:
             return None
         if row["expires_at"]:
             expires = dt.datetime.fromisoformat(
@@ -272,7 +444,8 @@ class Store:
             if expires <= utcnow():
                 return None
         return {
-            "device_id": row["device_id"],
+            "device_id": None,
+            "client_id": row["client_id"],
             "token_type": row["token_type"],
             "scopes": json.loads(row["scopes_json"]),
         }
@@ -298,7 +471,18 @@ class Store:
             batches = conn.execute(
                 "delete from healthkit_batches where device_id = ?", (device_id,)
             ).rowcount
-            return {"records": records, "batches": batches}
+            tokens = conn.execute(
+                "delete from healthkit_tokens where device_id = ?", (device_id,)
+            ).rowcount
+            devices = conn.execute(
+                "delete from healthkit_devices where device_id = ?", (device_id,)
+            ).rowcount
+            return {
+                "records": records,
+                "batches": batches,
+                "tokens": tokens,
+                "devices": devices,
+            }
 
     def purge_sample_type(self, sample_type: str) -> int:
         with self.lock, self.connect() as conn:
@@ -344,6 +528,10 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         try:
             if method == "POST" and rel == "/devices/register":
                 self.register_device()
+            elif method == "POST" and rel == "/clients/register":
+                self.register_client()
+            elif method == "POST" and rel == "/admin/pairing-tokens":
+                self.create_pairing_token()
             elif method == "POST" and rel == "/devices/revoke":
                 self.app_revoke_device()
             elif method == "POST" and rel == "/tokens/refresh":
@@ -472,9 +660,39 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             return None
         return principal
 
+    def create_pairing_token(self) -> None:
+        if not self.require_auth("admin:tokens"):
+            return
+        body = self.read_json()
+        client_type = str(body.get("client_type") or "").strip()
+        raw_scopes = body.get("scopes")
+        if not isinstance(raw_scopes, list):
+            raise ValueError("scopes must be a non-empty array")
+        scopes = [str(scope) for scope in raw_scopes]
+        validate_pairing_request(client_type, scopes)
+        ttl = int_field(
+            body.get("ttl_seconds"), PAIRING_TOKEN_SECONDS, field="ttl_seconds"
+        )
+        ttl = max(60, min(ttl, 3600))
+        created = self.store.create_pairing_token(client_type, scopes, ttl)
+        registration_url = (
+            "vitalsync://register?"
+            f"base_url={quote(self.config.public_base_url, safe='')}"
+        )
+        self.write_json(
+            {
+                "schema": "vitalsync.pairing_token.v1",
+                **created,
+                "registration_url": registration_url,
+            }
+        )
+
     def register_device(self) -> None:
         body = self.read_json()
-        if not self.config.open_registration:
+        pairing_token = str(body.get("pairing_token") or "").strip()
+        scopes = [WRITE_HEALTHKIT_SCOPE]
+        consume_pairing = bool(pairing_token)
+        if not self.config.open_registration and not pairing_token:
             if not self.require_auth("admin:devices"):
                 return
         label = str(body.get("device_label") or "").strip()
@@ -488,6 +706,19 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         access_expires = utcnow() + dt.timedelta(seconds=ACCESS_TOKEN_SECONDS)
         refresh_expires = utcnow() + dt.timedelta(seconds=REFRESH_TOKEN_SECONDS)
         with self.store.lock, self.store.connect() as conn:
+            if consume_pairing:
+                consumed_scopes = self.store.consume_pairing_token(
+                    conn, pairing_token, "iphone"
+                )
+                if not consumed_scopes or WRITE_HEALTHKIT_SCOPE not in consumed_scopes:
+                    self.error_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        "invalid_pairing_token",
+                        "pairing token missing, expired, consumed, or invalid",
+                        retryable=True,
+                    )
+                    return
+                scopes = consumed_scopes
             conn.execute(
                 """
                 insert into healthkit_devices
@@ -497,23 +728,72 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 (device_id, label, app_version, platform, iso(utcnow())),
             )
             self.store.insert_token(
-                conn, refresh, device_id, "refresh", ["upload:health"], refresh_expires
+                conn, refresh, device_id, "refresh", scopes, refresh_expires
             )
             self.store.insert_token(
-                conn, access, device_id, "access", ["upload:health"], access_expires
+                conn, access, device_id, "access", scopes, access_expires
             )
         self.write_json(
             {
                 "device_id": device_id,
                 "refresh_token": refresh,
                 "access_token": access,
+                "scopes": scopes,
+                "expires_at": iso(access_expires),
+            }
+        )
+
+    def register_client(self) -> None:
+        body = self.read_json()
+        pairing_token = str(body.get("pairing_token") or "").strip()
+        client_type = str(body.get("client_type") or "").strip()
+        client_label = str(body.get("client_label") or "").strip() or None
+        if not pairing_token or not client_type:
+            raise ValueError("pairing_token and client_type are required")
+        client_id = make_id("client")
+        refresh = make_id("vitalsync_refresh")
+        access = make_id("vitalsync_access")
+        access_expires = utcnow() + dt.timedelta(seconds=ACCESS_TOKEN_SECONDS)
+        refresh_expires = utcnow() + dt.timedelta(seconds=REFRESH_TOKEN_SECONDS)
+        with self.store.lock, self.store.connect() as conn:
+            scopes = self.store.consume_pairing_token(conn, pairing_token, client_type)
+            if not scopes or READ_HEALTHKIT_SCOPE not in scopes:
+                self.error_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    "invalid_pairing_token",
+                    "pairing token missing, expired, consumed, or invalid",
+                    retryable=True,
+                )
+                return
+            validate_pairing_request(client_type, scopes)
+            conn.execute(
+                """
+                insert into clients
+                  (client_id, client_type, client_label, created_at, revoked_at)
+                values (?, ?, ?, ?, null)
+                """,
+                (client_id, client_type, client_label, iso(utcnow())),
+            )
+            self.store.insert_client_token(
+                conn, refresh, client_id, "refresh", scopes, refresh_expires
+            )
+            self.store.insert_client_token(
+                conn, access, client_id, "access", scopes, access_expires
+            )
+        self.write_json(
+            {
+                "client_id": client_id,
+                "client_type": client_type,
+                "refresh_token": refresh,
+                "access_token": access,
+                "scopes": scopes,
                 "expires_at": iso(access_expires),
             }
         )
 
     def app_revoke_device(self) -> None:
         body = self.read_json()
-        principal = self.require_auth("upload:health")
+        principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
         if not principal:
             return
         device_id = str(body.get("device_id") or "")
@@ -534,13 +814,15 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         body = self.read_json()
         refresh = str(body.get("refresh_token") or "")
         device_id = str(body.get("device_id") or "")
-        if not refresh or not device_id:
-            raise ValueError("refresh_token and device_id are required")
+        client_id = str(body.get("client_id") or "")
+        if not refresh or not (device_id or client_id):
+            raise ValueError("refresh_token and device_id or client_id are required")
         principal = self.store.validate_token(refresh, self.config)
         if (
             not principal
             or principal["token_type"] != "refresh"
-            or principal["device_id"] != device_id
+            or (device_id and principal["device_id"] != device_id)
+            or (client_id and principal["client_id"] != client_id)
         ):
             self.error_json(
                 HTTPStatus.UNAUTHORIZED,
@@ -552,14 +834,19 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         access = make_id("vitalsync_access")
         expires = utcnow() + dt.timedelta(seconds=ACCESS_TOKEN_SECONDS)
         with self.store.lock, self.store.connect() as conn:
-            self.store.insert_token(
-                conn, access, device_id, "access", ["upload:health"], expires
-            )
+            if client_id:
+                self.store.insert_client_token(
+                    conn, access, client_id, "access", principal["scopes"], expires
+                )
+            else:
+                self.store.insert_token(
+                    conn, access, device_id, "access", principal["scopes"], expires
+                )
         self.write_json({"access_token": access, "expires_at": iso(expires)})
 
     def session_token(self) -> None:
         body = self.read_json()
-        principal = self.require_auth("upload:health")
+        principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
         if not principal:
             return
         device_id = str(body.get("device_id") or "")
@@ -574,7 +861,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         expires = utcnow() + dt.timedelta(seconds=SESSION_TOKEN_SECONDS)
         with self.store.lock, self.store.connect() as conn:
             self.store.insert_token(
-                conn, token, device_id, "session", ["upload:health"], expires
+                conn, token, device_id, "session", [WRITE_HEALTHKIT_SCOPE], expires
             )
         self.write_json(
             {
@@ -585,7 +872,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         )
 
     def upload_batch(self) -> None:
-        principal = self.require_auth("upload:health")
+        principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
         if not principal:
             return
         body = self.read_json(MAX_BATCH_BYTES)
@@ -757,6 +1044,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             raise ValueError("scope must be a non-empty array")
         scopes = [str(scope) for scope in scopes]
         allowed = set(SAMPLE_TYPE_SCOPES.values())
+        allowed.add(READ_HEALTHKIT_SCOPE)
         if not set(scopes).issubset(allowed):
             raise ValueError("scope contains unsupported read scope")
         ttl = int(body.get("expires_in_seconds") or ACCESS_TOKEN_SECONDS)
@@ -775,7 +1063,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         required_scope = SAMPLE_TYPE_SCOPES.get(sample_type)
         if not required_scope:
             raise ValueError("unsupported sample_type")
-        if not self.require_auth(required_scope):
+        if not self.require_any_scope([required_scope, READ_HEALTHKIT_SCOPE]):
             return
         limit = min(int(self.query_one(qs, "limit") or "500"), 1000)
         offset = read_cursor(self.query_one(qs, "cursor"))
@@ -826,7 +1114,7 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         }
 
     def fetch_batches(self, qs: dict[str, list[str]]) -> None:
-        if not self.require_any_scope(sorted(set(SAMPLE_TYPE_SCOPES.values()))):
+        if not self.require_auth(READ_HEALTHKIT_SCOPE):
             return
         limit = min(int(self.query_one(qs, "limit") or "500"), 1000)
         offset = read_cursor(self.query_one(qs, "cursor"))

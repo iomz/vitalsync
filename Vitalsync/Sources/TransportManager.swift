@@ -111,6 +111,18 @@ final class TransportManager: NSObject, ObservableObject {
     @Published var isConnected = false
     @Published var serverReachable: Bool? = nil
 
+    var hasRegisteredDevice: Bool {
+        credentials.deviceId != nil
+    }
+
+    var connectionStatusText: String {
+        guard hasRegisteredDevice else { return "Not registered" }
+        if isConnected { return "Connected" }
+        if serverReachable == true { return "Reachable" }
+        if serverReachable == false { return "Unavailable" }
+        return "Unknown"
+    }
+
     init(credentials: CredentialStore = .shared) {
         self.credentials = credentials
         serverBaseURLString = UserDefaults.standard.string(forKey: "server_base_url")
@@ -120,6 +132,30 @@ final class TransportManager: NSObject, ObservableObject {
     private var serverBase: URL {
         URL(string: serverBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines))
             ?? URL(string: Self.defaultServerBaseURLString)!
+    }
+
+    static func validatedAPIBaseURLString(from raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        let normalizedPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.isEmpty {
+            components.path = "/vitalsync/v1"
+        } else if !normalizedPath.hasSuffix("vitalsync/v1") {
+            components.path = "/" + normalizedPath + "/vitalsync/v1"
+        }
+
+        guard let normalized = components.string,
+              URL(string: normalized) != nil else {
+            return nil
+        }
+        return normalized
     }
 
     // MARK: - Upload via WebTransport (WKWebView shim)
@@ -261,6 +297,35 @@ final class TransportManager: NSObject, ObservableObject {
 
     // MARK: - HTTPS fallback
 
+    func refreshConnectionStatus() async {
+        guard hasRegisteredDevice else {
+            serverReachable = nil
+            isConnected = false
+            return
+        }
+
+        do {
+            var request = URLRequest(url: serverBase.appendingPathComponent("health"))
+            request.httpMethod = "GET"
+            request.timeoutInterval = 10
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let reachable = (response as? HTTPURLResponse)?.statusCode == 200
+            serverReachable = reachable
+            guard reachable else {
+                isConnected = false
+                return
+            }
+
+            _ = try await validAccessToken()
+            isConnected = true
+        } catch {
+            isConnected = false
+            if serverReachable != true {
+                serverReachable = false
+            }
+        }
+    }
+
     func uploadViaHTTPS(_ batch: VitalsyncBatch) async throws {
         let token = try await validAccessToken()
         let url = serverBase.appendingPathComponent("batches")
@@ -278,12 +343,46 @@ final class TransportManager: NSObject, ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw TransportError.streamError("No HTTP response") }
 
-        if http.statusCode == 200 { return }
+        if http.statusCode == 200 {
+            serverReachable = true
+            isConnected = true
+            return
+        }
 
         if let err = try? JSONDecoder.vitalsync.decode(ServerError.self, from: data) {
             throw TransportError.httpError(http.statusCode, err.message)
         }
         throw TransportError.httpError(http.statusCode, HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+    }
+
+    func revokeDevice() async throws {
+        guard let deviceId = credentials.deviceId else {
+            credentials.clear()
+            serverReachable = nil
+            isConnected = false
+            return
+        }
+
+        let token = try await validAccessToken()
+        var req = URLRequest(url: serverBase.appendingPathComponent("devices/revoke"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder.vitalsync.encode(["device_id": deviceId])
+        req.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw TransportError.streamError("No HTTP response") }
+        guard http.statusCode == 200 else {
+            if let err = try? JSONDecoder.vitalsync.decode(ServerError.self, from: data) {
+                throw TransportError.httpError(http.statusCode, err.message)
+            }
+            throw TransportError.httpError(http.statusCode, HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+        }
+
+        credentials.clear()
+        serverReachable = nil
+        isConnected = false
     }
 
     // MARK: - Token management
@@ -324,7 +423,7 @@ final class TransportManager: NSObject, ObservableObject {
         req.httpBody = try JSONEncoder.vitalsync.encode(["refresh_token": refresh, "device_id": deviceId])
 
         let (data, _) = try await URLSession.shared.data(for: req)
-        let resp = try JSONDecoder.vitalsync.decode(RegisterResponse.self, from: data)
+        let resp = try JSONDecoder.vitalsync.decode(AccessTokenResponse.self, from: data)
         credentials.accessToken = resp.accessToken
         credentials.accessTokenExpiry = resp.expiresAt
         return resp.accessToken
@@ -332,17 +431,17 @@ final class TransportManager: NSObject, ObservableObject {
 
     // MARK: - Device registration
 
-    func register(deviceLabel: String, registrationToken: String) async throws {
+    func register(deviceLabel: String, pairingToken: String) async throws {
         var req = URLRequest(url: serverBase.appendingPathComponent("devices/register"))
         req.httpMethod = "POST"
-        req.setValue("Bearer \(registrationToken)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: String] = [
-            "app": "Vitalsync",
-            "device_label": deviceLabel,
-            "platform": "iOS",
-            "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-        ]
+        let body = DeviceRegistrationRequest(
+            schema: VitalsyncSchema.deviceRegistration,
+            pairingToken: pairingToken,
+            deviceLabel: deviceLabel,
+            platform: "iOS",
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        )
         req.httpBody = try JSONEncoder.vitalsync.encode(body)
 
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -356,12 +455,45 @@ final class TransportManager: NSObject, ObservableObject {
             throw TransportError.httpError(http.statusCode, HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
         }
 
-        let resp = try JSONDecoder.vitalsync.decode(RegisterResponse.self, from: data)
+        let resp = try decodeRegisterResponse(data)
         credentials.deviceId = resp.deviceId
         credentials.accessToken = resp.accessToken
         credentials.accessTokenExpiry = resp.expiresAt
         credentials.refreshToken = resp.refreshToken
+        serverReachable = true
+        isConnected = true
         log.info("Device registered: \(resp.deviceId)")
+    }
+
+    private func decodeRegisterResponse(_ data: Data) throws -> RegisterResponse {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TransportError.streamError("Registration response was not a JSON object")
+        }
+
+        func stringValue(_ snakeCase: String, _ camelCase: String) throws -> String {
+            if let value = json[snakeCase] as? String, !value.isEmpty {
+                return value
+            }
+            if let value = json[camelCase] as? String, !value.isEmpty {
+                return value
+            }
+            throw TransportError.streamError("Registration response missing \(snakeCase)")
+        }
+
+        let expiresAt: Date
+        if let rawExpiresAt = (json["expires_at"] as? String) ?? (json["expiresAt"] as? String),
+           let parsedExpiresAt = ISO8601DateFormatter().date(from: rawExpiresAt) {
+            expiresAt = parsedExpiresAt
+        } else {
+            expiresAt = Date(timeIntervalSinceNow: 3600)
+        }
+
+        return RegisterResponse(
+            deviceId: try stringValue("device_id", "deviceId"),
+            refreshToken: try stringValue("refresh_token", "refreshToken"),
+            accessToken: try stringValue("access_token", "accessToken"),
+            expiresAt: expiresAt
+        )
     }
 }
 
