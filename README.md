@@ -153,6 +153,15 @@ curl -sS "http://127.0.0.1:8790/vitalsync/v1/records?sample_type=step_count" \
   -H "Authorization: Bearer <READ_TOKEN>"
 ```
 
+Inspect receiver storage stats:
+
+```sh
+curl -sS "http://127.0.0.1:8790/vitalsync/v1/admin/stats" \
+  -H "Authorization: Bearer $VITALSYNC_ADMIN_TOKEN"
+```
+
+The stats response includes database size, device/client counts, batch totals, record totals, and per-sample-type counts/latest timestamps. Receiver logs also include one `batch_upload` line per accepted upload with batch ID, record counts, duplicate flag, JSON read time, SQLite store time, and total request time.
+
 Uploaded and queried timestamps must be valid ISO-8601 values. The receiver normalizes accepted timestamps to UTC before storing them.
 
 WebTransport upload is specified but not implemented in this stdlib receiver; iOS falls back to `POST /batches`.

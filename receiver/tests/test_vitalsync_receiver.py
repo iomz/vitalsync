@@ -130,6 +130,23 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(records["records"][0]["schema"], "vitalsync.record.v1")
         self.assertEqual(records["records"][0]["source_id"], "sample_1")
 
+        status, stats = self.request(
+            "GET",
+            "/admin/stats",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(stats["schema"], "vitalsync.receiver_stats.v1")
+        self.assertGreaterEqual(stats["database"]["size_bytes"], 0)
+        self.assertEqual(stats["devices"]["total"], 1)
+        self.assertEqual(stats["devices"]["active"], 1)
+        self.assertEqual(stats["batches"]["total"], 1)
+        self.assertEqual(stats["records"]["total"], 1)
+        self.assertEqual(stats["records"]["active"], 1)
+        self.assertEqual(stats["records"]["deleted"], 0)
+        self.assertEqual(stats["records"]["by_sample_type"][0]["sample_type"], "step_count")
+        self.assertEqual(stats["records"]["by_sample_type"][0]["active"], 1)
+
         status, error = self.request(
             "GET",
             "/batches",
