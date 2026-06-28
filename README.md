@@ -1,7 +1,15 @@
-# Vitalsync
+<p align="center">
+  <img src="Vitalsync/Resources/Vitalsync.icon/Assets/Vitalsync.png" alt="Vitalsync app icon" width="160">
+</p>
 
-[![CI](https://github.com/iomz/vitalsync/actions/workflows/ci.yml/badge.svg)](https://github.com/iomz/vitalsync/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<h1 align="center">Vitalsync</h1>
+
+<p align="center">
+  <a href="https://github.com/iomz/vitalsync/actions/workflows/ci.yml"><img src="https://github.com/iomz/vitalsync/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/platform-iOS-007aff.svg" alt="Platform: iOS">
+  <img src="https://img.shields.io/badge/HealthKit-enabled-red.svg" alt="HealthKit enabled">
+</p>
 
 iOS app for syncing selected Apple Health data to Vitalsync receiver endpoints.
 
@@ -9,7 +17,7 @@ Vitalsync is a personal project. It is not a medical device and is not intended 
 
 ## Requirements
 
-- Xcode 16 or newer
+- Xcode 26 or newer
 - iPhone with Health app data
 - Apple Developer team with HealthKit capability enabled for bundle ID
 
