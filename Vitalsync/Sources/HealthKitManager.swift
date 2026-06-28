@@ -189,13 +189,21 @@ final class HealthKitManager: ObservableObject {
         groups: [VitalsyncTypeGroup],
         onUpdate: @escaping @MainActor () async -> Void
     ) async {
+        let allTypesByKey = Dictionary(
+            groups.flatMap(\.queryTypes).map { (backgroundDeliveryKey(for: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let activeTypes = groups.filter(\.enabled).flatMap(\.queryTypes)
         let activeKeys = Set(activeTypes.map(backgroundDeliveryKey(for:)))
 
-        let inactiveKeys = observerQueries.keys.filter { !activeKeys.contains($0) }
-        for key in inactiveKeys {
+        for (key, type) in allTypesByKey where !activeKeys.contains(key) {
             if let query = observerQueries.removeValue(forKey: key) {
                 store.stop(query)
+            }
+            do {
+                try await disableBackgroundDelivery(for: type)
+            } catch {
+                log.error("Failed to disable HealthKit background delivery for \(key): \(error.localizedDescription)")
             }
         }
 

@@ -9,7 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from vitalsync_receiver.main import API_PREFIX, Config, make_receiver, token_hash
+from vitalsync_receiver.main import (
+    API_PREFIX,
+    Config,
+    make_receiver,
+    sqlite_database_size_bytes,
+    token_hash,
+)
 
 
 class ReceiverTest(unittest.TestCase):
@@ -187,6 +193,40 @@ class ReceiverTest(unittest.TestCase):
         status, error = self.request("POST", "/batches", batch, headers)
         self.assertEqual(status, 409)
         self.assertEqual(error["code"], "batch_id_conflict")
+
+    def test_batch_json_body_must_be_object(self):
+        status, registered = self.request(
+            "POST",
+            "/devices/register",
+            {
+                "app": "Vitalsync",
+                "device_label": "Test iPhone",
+                "platform": "iOS",
+                "app_version": "0.1.0",
+            },
+        )
+        self.assertEqual(status, 200)
+        status, error = self.request(
+            "POST",
+            "/batches",
+            [],
+            {
+                "Authorization": f"Bearer {registered['access_token']}",
+                "Idempotency-Key": "bad_shape",
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(error["code"], "bad_request")
+        self.assertEqual(error["message"], "JSON body must be an object")
+
+    def test_sqlite_database_size_includes_wal_and_shm_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "receiver.sqlite"
+            db_path.write_bytes(b"main")
+            db_path.with_name(f"{db_path.name}-wal").write_bytes(b"wal-bytes")
+            db_path.with_name(f"{db_path.name}-shm").write_bytes(b"shm")
+
+            self.assertEqual(sqlite_database_size_bytes(db_path), 16)
 
     def test_pairing_token_registers_device_once_when_registration_closed(self):
         self.receiver.config.open_registration = False

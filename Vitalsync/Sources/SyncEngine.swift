@@ -69,14 +69,20 @@ actor PendingQueue {
         var quarantinedFiles: [String] = []
 
         for url in files {
-            let data = try Data(contentsOf: url)
             do {
+                let data = try Data(contentsOf: url)
                 batches.append(try JSONDecoder.vitalsync.decode(VitalsyncBatch.self, from: data))
             } catch {
+                let loadError = error
                 let filename = url.lastPathComponent
-                quarantinedFiles.append(filename)
-                quarantineUnreadableBatch(at: url)
-                log.error("Quarantined unreadable pending batch \(filename): \(error.localizedDescription)")
+                do {
+                    try quarantineUnreadableBatch(at: url)
+                    quarantinedFiles.append(filename)
+                    log.error("Quarantined unreadable pending batch \(filename): \(loadError.localizedDescription)")
+                } catch {
+                    log.error("Failed to quarantine unreadable pending batch \(filename): \(error.localizedDescription); load error: \(loadError.localizedDescription)")
+                    throw loadError
+                }
             }
         }
 
@@ -95,10 +101,10 @@ actor PendingQueue {
         (try? FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("pending-") }.count) ?? 0
     }
 
-    private func quarantineUnreadableBatch(at url: URL) {
+    private func quarantineUnreadableBatch(at url: URL) throws {
         let quarantinedName = "invalid-\(Int(Date().timeIntervalSince1970))-\(url.lastPathComponent)"
         let destination = dir.appendingPathComponent(quarantinedName)
-        try? FileManager.default.moveItem(at: url, to: destination)
+        try FileManager.default.moveItem(at: url, to: destination)
     }
 }
 
@@ -284,7 +290,6 @@ final class SyncEngine: ObservableObject {
                 sent += 1
             }
             lastBatchCount = sent
-            pendingCount = await queue.count()
             if !pending.quarantinedFiles.isEmpty {
                 lastError = queueWarning(for: pending.quarantinedFiles)
             } else if sent == 0 {
@@ -293,6 +298,7 @@ final class SyncEngine: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+        pendingCount = await queue.count()
         lastAttemptDate = .now
         saveSyncState()
     }

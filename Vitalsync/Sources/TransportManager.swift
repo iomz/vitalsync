@@ -435,8 +435,7 @@ final class TransportManager: NSObject, ObservableObject {
         do {
             return try JSONDecoder.vitalsync.decode(T.self, from: data)
         } catch {
-            let body = String(data: data.prefix(512), encoding: .utf8) ?? "<non-UTF-8 response>"
-            throw TransportError.streamError("Could not decode \(context): \(error.localizedDescription). Body: \(body)")
+            throw TransportError.streamError("Could not decode \(context): \(error.localizedDescription)")
         }
     }
 

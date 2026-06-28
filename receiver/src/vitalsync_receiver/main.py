@@ -116,6 +116,18 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def sqlite_database_size_bytes(db_path: Path) -> int:
+    return sum(
+        candidate.stat().st_size
+        for candidate in (
+            db_path,
+            db_path.with_name(f"{db_path.name}-wal"),
+            db_path.with_name(f"{db_path.name}-shm"),
+        )
+        if candidate.exists()
+    )
+
+
 def make_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(18)}"
 
@@ -288,7 +300,7 @@ class Store:
 
     def stats(self) -> dict[str, Any]:
         db_path = Path(self.db_path).expanduser()
-        db_size_bytes = db_path.stat().st_size if db_path.exists() else 0
+        db_size_bytes = sqlite_database_size_bytes(db_path)
         with self.connect() as conn:
             device_count = conn.execute(
                 "select count(*) as count from healthkit_devices"
@@ -960,6 +972,8 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
             return
         started = time.perf_counter()
         body = self.read_json(MAX_BATCH_BYTES)
+        if not isinstance(body, dict):
+            raise ValueError("JSON body must be an object")
         read_ms = (time.perf_counter() - started) * 1000
         records = body.get("records") or []
         deleted = body.get("deleted") or []
