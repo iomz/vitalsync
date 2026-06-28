@@ -84,6 +84,7 @@ struct VitalsyncQueryResult {
 final class HealthKitManager: ObservableObject {
     private let store = HKHealthStore()
     private let anchors = AnchorStore()
+    private var observerQueries: [String: HKObserverQuery] = [:]
 
     @Published var authorizationStatus: [String: HKAuthorizationStatus] = [:]
     @Published var readAuthorizationRequestStatus: [String: HKAuthorizationRequestStatus] = [:]
@@ -180,6 +181,96 @@ final class HealthKitManager: ObservableObject {
         groups
             .filter(\.enabled)
             .contains { authorizationStatus[$0.id] == .sharingDenied }
+    }
+
+    // MARK: Background delivery
+
+    func configureBackgroundDelivery(
+        groups: [VitalsyncTypeGroup],
+        onUpdate: @escaping @MainActor () async -> Void
+    ) async {
+        let activeTypes = groups.filter(\.enabled).flatMap(\.queryTypes)
+        let activeKeys = Set(activeTypes.map(backgroundDeliveryKey(for:)))
+
+        let inactiveKeys = observerQueries.keys.filter { !activeKeys.contains($0) }
+        for key in inactiveKeys {
+            if let query = observerQueries.removeValue(forKey: key) {
+                store.stop(query)
+            }
+        }
+
+        for type in activeTypes {
+            let key = backgroundDeliveryKey(for: type)
+            if observerQueries[key] == nil {
+                let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completionHandler, error in
+                    if let error {
+                        log.error("HealthKit observer update failed for \(key): \(error.localizedDescription)")
+                        completionHandler()
+                        return
+                    }
+
+                    Task { @MainActor in
+                        await onUpdate()
+                        completionHandler()
+                    }
+                }
+                observerQueries[key] = query
+                store.execute(query)
+            }
+
+            do {
+                try await enableBackgroundDelivery(for: type)
+            } catch {
+                log.error("Failed to enable HealthKit background delivery for \(key): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func disableBackgroundDelivery(groups: [VitalsyncTypeGroup]) async {
+        for query in observerQueries.values {
+            store.stop(query)
+        }
+        observerQueries.removeAll()
+
+        for type in groups.flatMap(\.queryTypes) {
+            do {
+                try await disableBackgroundDelivery(for: type)
+            } catch {
+                log.error("Failed to disable HealthKit background delivery for \(self.backgroundDeliveryKey(for: type)): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func enableBackgroundDelivery(for type: HKSampleType) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            store.enableBackgroundDelivery(for: type, frequency: .immediate) { success, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else if success {
+                    cont.resume()
+                } else {
+                    cont.resume(throwing: SyncError.healthAuthorizationNotDetermined)
+                }
+            }
+        }
+    }
+
+    private func disableBackgroundDelivery(for type: HKSampleType) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            store.disableBackgroundDelivery(for: type) { success, error in
+                if let error {
+                    cont.resume(throwing: error)
+                } else if success {
+                    cont.resume()
+                } else {
+                    cont.resume(throwing: SyncError.healthAuthorizationNotDetermined)
+                }
+            }
+        }
+    }
+
+    private func backgroundDeliveryKey(for type: HKSampleType) -> String {
+        type.identifier
     }
 
     // MARK: Anchored query (incremental sync)

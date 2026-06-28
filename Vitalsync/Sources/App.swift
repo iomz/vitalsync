@@ -86,6 +86,10 @@ final class AppDependencies: ObservableObject {
         await syncEngine.performBackgroundSync(typeGroups: enabledTypeGroups)
     }
 
+    func configureBackgroundSync() async {
+        await syncEngine.configureBackgroundSync(typeGroups: enabledTypeGroups)
+    }
+
     func handleRegistrationURL(_ url: URL) {
         guard
             url.scheme == "vitalsync",
@@ -127,7 +131,7 @@ struct VitalsyncApp: App {
                 }
                 .task {
                     await deps.transport.refreshConnectionStatus()
-                    deps.syncEngine.scheduleBackgroundSync()
+                    await deps.configureBackgroundSync()
                 }
         }
         .backgroundTask(.appRefresh(SyncEngine.backgroundRefreshTaskIdentifier)) {
@@ -182,11 +186,11 @@ struct StatusView: View {
                         ok: transport.isConnected ? true : (transport.serverReachable == false ? false : nil)
                     )
                     if let d = engine.lastSyncDate {
-                        VitalsyncStatusRow(label: "Last sync", value: d.formatted(.relative(presentation: .named)), ok: true)
+                        VitalsyncStatusRow(label: "Last sync", value: localTimestamp(d), ok: true)
                     } else {
                         VitalsyncStatusRow(label: "Last sync", value: "Never", ok: nil)
                     }
-                    VitalsyncStatusRow(label: "Last batch count", value: "\(engine.lastBatchCount)", ok: nil)
+                    VitalsyncStatusRow(label: "Last batch count", value: "\(engine.lastSuccessfulBatchCount)", ok: nil)
                     if let err = engine.lastError {
                         VitalsyncStatusRow(label: "Last error", value: err, ok: false)
                     }
@@ -216,6 +220,10 @@ struct StatusView: View {
         case .unknown:       return .secondary
         default:             return .secondary
         }
+    }
+
+    private func localTimestamp(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .standard)
     }
 }
 
@@ -257,6 +265,7 @@ struct DataTypesView: View {
                             get: { deps.enabledTypeGroups[i].enabled },
                             set: { isEnabled in
                                 deps.enabledTypeGroups[i].enabled = isEnabled
+                                Task { await deps.configureBackgroundSync() }
                                 Task { await refreshPermissionRequestStatus() }
                             }
                         )
@@ -430,6 +439,11 @@ struct SyncView: View {
                     }
                 }
                 Section("Last attempt") {
+                    if let lastAttemptDate = engine.lastAttemptDate {
+                        LabeledContent("Time", value: localTimestamp(lastAttemptDate))
+                    } else {
+                        LabeledContent("Time", value: "Never")
+                    }
                     LabeledContent("Records", value: "\(engine.lastRecordCount)")
                     LabeledContent("Deleted", value: "\(engine.lastDeletedCount)")
                     LabeledContent("Batches", value: "\(engine.lastBatchCount)")
@@ -471,6 +485,13 @@ struct SyncView: View {
         .sheet(isPresented: $showingDebugBundle) {
             DebugBundleView()
         }
+        .onChange(of: engine.backgroundSyncEnabled) { _, _ in
+            Task { await deps.configureBackgroundSync() }
+        }
+    }
+
+    private func localTimestamp(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .standard)
     }
 }
 
@@ -692,10 +713,12 @@ struct DebugBundleView: View {
         Vitalsync — debug bundle
         Generated: \(Date().formatted())
         Device ID: \(deps.credentials.deviceId ?? "not registered")
-        Last sync: \(engine.lastSyncDate?.formatted() ?? "never")
+        Last successful sync: \(engine.lastSyncDate?.formatted(date: .abbreviated, time: .standard) ?? "never")
+        Last attempt: \(engine.lastAttemptDate?.formatted(date: .abbreviated, time: .standard) ?? "never")
         Last records: \(engine.lastRecordCount)
         Last deleted: \(engine.lastDeletedCount)
-        Last batch count: \(engine.lastBatchCount)
+        Last attempt batch count: \(engine.lastBatchCount)
+        Last successful batch count: \(engine.lastSuccessfulBatchCount)
         Pending batches: \(engine.pendingCount)
         Sync status: \(engine.syncStatus ?? "idle")
         Last error: \(engine.lastError ?? "none")

@@ -40,6 +40,11 @@ struct SyncResult {
 
 // MARK: - Pending queue (local encrypted retry queue)
 
+struct PendingBatchLoad {
+    let batches: [VitalsyncBatch]
+    let quarantinedFiles: [String]
+}
+
 actor PendingQueue {
     private let dir: URL
 
@@ -56,14 +61,29 @@ actor PendingQueue {
         log.info("Queued batch \(batch.batchId) (\(data.count) bytes)")
     }
 
-    func pendingBatches() throws -> [VitalsyncBatch] {
+    func pendingBatches() throws -> PendingBatchLoad {
         let files = try FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil
         ).filter { $0.lastPathComponent.hasPrefix("pending-") }
-        return try files.compactMap { url -> VitalsyncBatch? in
+        var batches: [VitalsyncBatch] = []
+        var quarantinedFiles: [String] = []
+
+        for url in files {
             let data = try Data(contentsOf: url)
-            return try? JSONDecoder.vitalsync.decode(VitalsyncBatch.self, from: data)
-        }.sorted { $0.sequence < $1.sequence }
+            do {
+                batches.append(try JSONDecoder.vitalsync.decode(VitalsyncBatch.self, from: data))
+            } catch {
+                let filename = url.lastPathComponent
+                quarantinedFiles.append(filename)
+                quarantineUnreadableBatch(at: url)
+                log.error("Quarantined unreadable pending batch \(filename): \(error.localizedDescription)")
+            }
+        }
+
+        return PendingBatchLoad(
+            batches: batches.sorted { $0.sequence < $1.sequence },
+            quarantinedFiles: quarantinedFiles
+        )
     }
 
     func dequeue(batchId: String) {
@@ -73,6 +93,12 @@ actor PendingQueue {
 
     func count() -> Int {
         (try? FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("pending-") }.count) ?? 0
+    }
+
+    private func quarantineUnreadableBatch(at url: URL) {
+        let quarantinedName = "invalid-\(Int(Date().timeIntervalSince1970))-\(url.lastPathComponent)"
+        let destination = dir.appendingPathComponent(quarantinedName)
+        try? FileManager.default.moveItem(at: url, to: destination)
     }
 }
 
@@ -87,8 +113,10 @@ final class SyncEngine: ObservableObject {
 
     @Published var isSyncing = false
     @Published var lastSyncDate: Date?
+    @Published var lastAttemptDate: Date?
     @Published var lastError: String?
     @Published var lastBatchCount: Int = 0
+    @Published var lastSuccessfulBatchCount: Int = 0
     @Published var lastRecordCount: Int = 0
     @Published var lastDeletedCount: Int = 0
     @Published var pendingCount: Int = 0
@@ -110,6 +138,13 @@ final class SyncEngine: ObservableObject {
     static let maxBatchBytes = 1_048_576   // 1 MiB
     private static let backgroundSyncEnabledKey = "background_sync_enabled"
     private static let lastBackgroundSyncAttemptKey = "last_background_sync_attempt"
+    private static let lastSyncDateKey = "last_sync_date"
+    private static let lastAttemptDateKey = "last_attempt_date"
+    private static let lastErrorKey = "last_error"
+    private static let lastBatchCountKey = "last_batch_count"
+    private static let lastSuccessfulBatchCountKey = "last_successful_batch_count"
+    private static let lastRecordCountKey = "last_record_count"
+    private static let lastDeletedCountKey = "last_deleted_count"
     private static let minimumBackgroundSyncInterval: TimeInterval = 6 * 60 * 60
 
     init(hkManager: HealthKitManager, transport: TransportManager, credentials: CredentialStore) {
@@ -117,6 +152,8 @@ final class SyncEngine: ObservableObject {
         self.transport = transport
         self.credentials = credentials
         backgroundSyncEnabled = UserDefaults.standard.bool(forKey: Self.backgroundSyncEnabledKey)
+        loadSyncState()
+        Task { pendingCount = await queue.count() }
     }
 
     // MARK: Manual sync
@@ -124,9 +161,14 @@ final class SyncEngine: ObservableObject {
     func syncNow(typeGroups: [VitalsyncTypeGroup]) async {
         guard !isSyncing else { return }
         isSyncing = true
+        lastAttemptDate = .now
         lastError = nil
+        lastBatchCount = 0
+        lastRecordCount = 0
+        lastDeletedCount = 0
         syncStatus = "Preparing"
         var result = SyncResult()
+        saveSyncState()
 
         do {
             let enabledGroups = typeGroups.filter(\.enabled)
@@ -162,7 +204,7 @@ final class SyncEngine: ObservableObject {
 
             // 3. Upload each batch (retry pending first, then new)
             let pending = try await queue.pendingBatches()
-            let uploadBatches = pending + batches
+            let uploadBatches = pending.batches + batches
             for (index, batch) in uploadBatches.enumerated() {
                 syncStatus = "Uploading \(index + 1) of \(uploadBatches.count)"
                 try await uploadWithFallback(batch)
@@ -175,16 +217,26 @@ final class SyncEngine: ObservableObject {
                 await hkManager.commitAnchor(for: queryResult)
             }
 
-            lastSyncDate = .now
+            result.completedAt = .now
+            lastSyncDate = result.completedAt
+            lastAttemptDate = result.completedAt
             lastBatchCount = result.batchesSent
+            lastSuccessfulBatchCount = result.batchesSent
+            if !pending.quarantinedFiles.isEmpty {
+                lastError = queueWarning(for: pending.quarantinedFiles)
+            }
             log.info("Sync complete: \(result.totalRecords) records, \(result.batchesSent) batches")
 
         } catch {
+            result.completedAt = .now
+            lastAttemptDate = result.completedAt
+            lastBatchCount = result.batchesSent
             lastError = error.localizedDescription
             log.error("Sync failed: \(error.localizedDescription)")
         }
 
         pendingCount = await queue.count()
+        saveSyncState()
         syncStatus = nil
         isSyncing = false
     }
@@ -216,18 +268,32 @@ final class SyncEngine: ObservableObject {
     func retryPending() async {
         guard !isSyncing else { return }
         isSyncing = true
+        lastAttemptDate = .now
+        lastError = nil
+        lastBatchCount = 0
+        saveSyncState()
         defer { Task { @MainActor in isSyncing = false } }
 
         do {
             let pending = try await queue.pendingBatches()
-            for batch in pending {
+            var sent = 0
+            for batch in pending.batches {
                 try await uploadWithFallback(batch)
                 await queue.dequeue(batchId: batch.batchId)
+                sent += 1
             }
+            lastBatchCount = sent
             pendingCount = await queue.count()
+            if !pending.quarantinedFiles.isEmpty {
+                lastError = queueWarning(for: pending.quarantinedFiles)
+            } else if sent == 0 {
+                lastError = "No readable pending batches to retry."
+            }
         } catch {
             lastError = error.localizedDescription
         }
+        lastAttemptDate = .now
+        saveSyncState()
     }
 
     // MARK: Background sync
@@ -244,6 +310,20 @@ final class SyncEngine: ObservableObject {
             try BGTaskScheduler.shared.submit(request)
         } catch {
             log.error("Failed to schedule background sync: \(error.localizedDescription)")
+        }
+    }
+
+    func configureBackgroundSync(typeGroups: [VitalsyncTypeGroup]) async {
+        guard HealthKitManager.isHealthDataAvailable else { return }
+
+        if backgroundSyncEnabled {
+            await hkManager.configureBackgroundDelivery(groups: typeGroups) { [weak self] in
+                await self?.performBackgroundSync(typeGroups: typeGroups)
+            }
+            scheduleBackgroundSync()
+        } else {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.backgroundRefreshTaskIdentifier)
+            await hkManager.disableBackgroundDelivery(groups: HealthKitManager.typeGroups)
         }
     }
 
@@ -267,9 +347,37 @@ final class SyncEngine: ObservableObject {
         do {
             try await transport.uploadViaHTTPS(batch)
         } catch {
-            try await queue.enqueue(batch)
+            if shouldQueueForRetry(error) {
+                try await queue.enqueue(batch)
+            }
             throw error
         }
+    }
+
+    private func shouldQueueForRetry(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cancelled, .userAuthenticationRequired, .userCancelledAuthentication:
+                return false
+            default:
+                return true
+            }
+        }
+
+        guard let transportError = error as? TransportError else { return false }
+        switch transportError {
+        case .timeout, .streamError:
+            return true
+        case .httpError(let code, _):
+            return code == 408 || code == 429 || code >= 500
+        case .webTransportUnavailable, .sessionTokenFetchFailed:
+            return false
+        }
+    }
+
+    private func queueWarning(for filenames: [String]) -> String {
+        let label = filenames.count == 1 ? "batch" : "batches"
+        return "Skipped \(filenames.count) unreadable pending \(label). Run Sync now to re-query data that was never uploaded."
     }
 
     func resetSyncHistory(typeGroups: [VitalsyncTypeGroup]) async {
@@ -277,12 +385,37 @@ final class SyncEngine: ObservableObject {
             await hkManager.resetAnchor(for: group)
         }
         lastSyncDate = nil
+        lastAttemptDate = nil
         lastBatchCount = 0
+        lastSuccessfulBatchCount = 0
         lastRecordCount = 0
         lastDeletedCount = 0
         lastError = nil
         syncStatus = nil
         pendingCount = await queue.count()
+        saveSyncState()
+    }
+
+    private func loadSyncState() {
+        let defaults = UserDefaults.standard
+        lastSyncDate = defaults.object(forKey: Self.lastSyncDateKey) as? Date
+        lastAttemptDate = defaults.object(forKey: Self.lastAttemptDateKey) as? Date
+        lastError = defaults.string(forKey: Self.lastErrorKey)
+        lastBatchCount = defaults.integer(forKey: Self.lastBatchCountKey)
+        lastSuccessfulBatchCount = defaults.integer(forKey: Self.lastSuccessfulBatchCountKey)
+        lastRecordCount = defaults.integer(forKey: Self.lastRecordCountKey)
+        lastDeletedCount = defaults.integer(forKey: Self.lastDeletedCountKey)
+    }
+
+    private func saveSyncState() {
+        let defaults = UserDefaults.standard
+        defaults.set(lastSyncDate, forKey: Self.lastSyncDateKey)
+        defaults.set(lastAttemptDate, forKey: Self.lastAttemptDateKey)
+        defaults.set(lastError, forKey: Self.lastErrorKey)
+        defaults.set(lastBatchCount, forKey: Self.lastBatchCountKey)
+        defaults.set(lastSuccessfulBatchCount, forKey: Self.lastSuccessfulBatchCountKey)
+        defaults.set(lastRecordCount, forKey: Self.lastRecordCountKey)
+        defaults.set(lastDeletedCount, forKey: Self.lastDeletedCountKey)
     }
 
     // MARK: Batch splitting

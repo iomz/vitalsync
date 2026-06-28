@@ -98,6 +98,23 @@ In the iOS app, paste the raw `pairing_token` into Account -> Device -> Pairing 
 
 Successful registration consumes the pairing token and returns normal refresh/access tokens with `write:healthkit`. Pairing tokens are stored hashed in SQLite, expire after their TTL, and cannot be reused. Set `VITALSYNC_PUBLIC_BASE_URL=https://receiver.example.com` to make generated endpoint URLs use `https://receiver.example.com/vitalsync/v1/...`; pairing responses also include a future-facing `vitalsync://register?...` URL.
 
+## Background sync
+
+Background sync is off by default. Open Sync -> Background sync and enable it after device registration and Health access are configured.
+
+Vitalsync uses two iOS background mechanisms:
+
+- HealthKit background delivery is the primary trigger. When enabled, the app registers `HKObserverQuery` instances for each enabled sample type and calls `enableBackgroundDelivery(..., frequency: .immediate)`. HealthKit can wake the app after new matching Health data arrives.
+- `BGAppRefreshTask` is a fallback periodic refresh. The app submits `io.sazanka.vitalsync.refresh` with an earliest begin date about six hours in the future and resubmits it after each background run.
+
+Background execution is still controlled by iOS. The six-hour interval is a throttle and earliest request time, not a guaranteed schedule. HealthKit observer wakes and app refresh wakes both call the same incremental sync path, which uploads new records, stores anchors only after successful upload, and retries queued batches first.
+
+Sync summary UI is stored in app `UserDefaults`: last attempt time, last successful sync time, counts, and last error. Anchors and pending upload batches are stored in the app data container. Installing a new build through Xcode with the same bundle ID normally preserves that container; deleting the app removes these app data files. Keychain credentials can survive app deletion depending on iOS behavior and signing identity.
+
+Retry pending uploads only retries queue files that still decode as current `VitalsyncBatch` JSON. If an older or corrupt queue file cannot be decoded, the app quarantines it, removes it from the pending count, and reports that the unreadable pending batch was skipped. Because anchors are saved only after successful upload, running Sync now re-queries data that was not uploaded.
+
+The app declares both `fetch` and `healthkit` background modes. HealthKit capability must remain enabled for the bundle ID.
+
 The minimal scope model is:
 
 ```text

@@ -263,7 +263,6 @@ extension JSONEncoder {
     static var vitalsync: JSONEncoder {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
-        e.keyEncodingStrategy = .convertToSnakeCase
         return e
     }
 }
@@ -272,7 +271,6 @@ extension JSONDecoder {
     static var vitalsync: JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
-        d.keyDecodingStrategy = .convertFromSnakeCase
         return d
     }
 }
