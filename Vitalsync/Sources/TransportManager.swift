@@ -335,7 +335,7 @@ final class TransportManager: NSObject, ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(batch.batchId, forHTTPHeaderField: "Idempotency-Key")
         req.httpBody = try JSONEncoder.vitalsync.encode(batch)
-        req.timeoutInterval = 60
+        req.timeoutInterval = 180
 
         // Log only metadata
         log.info("HTTPS upload: batchId=\(batch.batchId) records=\(batch.records.count)")
@@ -397,8 +397,9 @@ final class TransportManager: NSObject, ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder.vitalsync.encode(["device_id": deviceId, "capability": "webtransport_upload"])
 
-        let (data, _) = try await URLSession.shared.data(for: req)
-        let resp = try JSONDecoder.vitalsync.decode(SessionTokenResponse.self, from: data)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validateHTTPResponse(response, data: data)
+        let resp: SessionTokenResponse = try decodeServerJSON(data, context: "session token response")
         return resp.sessionToken
     }
 
@@ -422,11 +423,32 @@ final class TransportManager: NSObject, ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder.vitalsync.encode(["refresh_token": refresh, "device_id": deviceId])
 
-        let (data, _) = try await URLSession.shared.data(for: req)
-        let resp = try JSONDecoder.vitalsync.decode(AccessTokenResponse.self, from: data)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validateHTTPResponse(response, data: data)
+        let resp: AccessTokenResponse = try decodeServerJSON(data, context: "access token response")
         credentials.accessToken = resp.accessToken
         credentials.accessTokenExpiry = resp.expiresAt
         return resp.accessToken
+    }
+
+    private func decodeServerJSON<T: Decodable>(_ data: Data, context: String) throws -> T {
+        do {
+            return try JSONDecoder.vitalsync.decode(T.self, from: data)
+        } catch {
+            throw TransportError.streamError("Could not decode \(context): \(error.localizedDescription)")
+        }
+    }
+
+    private func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw TransportError.streamError("No HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            if let err = try? JSONDecoder.vitalsync.decode(ServerError.self, from: data) {
+                throw TransportError.httpError(http.statusCode, err.message)
+            }
+            throw TransportError.httpError(http.statusCode, HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+        }
     }
 
     // MARK: - Device registration

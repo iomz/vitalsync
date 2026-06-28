@@ -17,6 +17,7 @@ import os
 import secrets
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -113,6 +114,18 @@ def sha256_json(value: Any) -> str:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def sqlite_database_size_bytes(db_path: Path) -> int:
+    return sum(
+        candidate.stat().st_size
+        for candidate in (
+            db_path,
+            db_path.with_name(f"{db_path.name}-wal"),
+            db_path.with_name(f"{db_path.name}-shm"),
+        )
+        if candidate.exists()
+    )
 
 
 def make_id(prefix: str) -> str:
@@ -284,6 +297,86 @@ class Store:
                   on client_tokens(client_id);
                 """
             )
+
+    def stats(self) -> dict[str, Any]:
+        db_path = Path(self.db_path).expanduser()
+        db_size_bytes = sqlite_database_size_bytes(db_path)
+        with self.connect() as conn:
+            device_count = conn.execute(
+                "select count(*) as count from healthkit_devices"
+            ).fetchone()["count"]
+            active_device_count = conn.execute(
+                "select count(*) as count from healthkit_devices where revoked_at is null"
+            ).fetchone()["count"]
+            client_count = conn.execute(
+                "select count(*) as count from clients"
+            ).fetchone()["count"]
+            batch_row = conn.execute(
+                """
+                select count(*) as count, max(received_at) as latest_received_at
+                from healthkit_batches
+                """
+            ).fetchone()
+            record_row = conn.execute(
+                """
+                select
+                  count(*) as total,
+                  sum(case when deleted = 0 then 1 else 0 end) as active,
+                  sum(case when deleted = 1 then 1 else 0 end) as deleted,
+                  max(updated_at) as latest_updated_at
+                from healthkit_records
+                """
+            ).fetchone()
+            sample_rows = conn.execute(
+                """
+                select
+                  sample_type,
+                  count(*) as total,
+                  sum(case when deleted = 0 then 1 else 0 end) as active,
+                  sum(case when deleted = 1 then 1 else 0 end) as deleted,
+                  max(end_time) as latest_end_time,
+                  max(updated_at) as latest_updated_at
+                from healthkit_records
+                group by sample_type
+                order by sample_type
+                """
+            ).fetchall()
+        return {
+            "schema": "vitalsync.receiver_stats.v1",
+            "server_time": iso(utcnow()),
+            "database": {
+                "path": str(db_path),
+                "size_bytes": db_size_bytes,
+            },
+            "devices": {
+                "total": int(device_count or 0),
+                "active": int(active_device_count or 0),
+            },
+            "clients": {
+                "total": int(client_count or 0),
+            },
+            "batches": {
+                "total": int(batch_row["count"] or 0),
+                "latest_received_at": batch_row["latest_received_at"],
+            },
+            "records": {
+                "total": int(record_row["total"] or 0),
+                "active": int(record_row["active"] or 0),
+                "deleted": int(record_row["deleted"] or 0),
+                "latest_updated_at": record_row["latest_updated_at"],
+                "by_sample_type": [
+                    {
+                        "sample_type": row["sample_type"],
+                        "total": int(row["total"] or 0),
+                        "active": int(row["active"] or 0),
+                        "deleted": int(row["deleted"] or 0),
+                        "latest_end_time": row["latest_end_time"],
+                        "latest_updated_at": row["latest_updated_at"],
+                    }
+                    for row in sample_rows
+                ],
+            },
+        }
 
     def insert_token(
         self,
@@ -542,6 +635,8 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 self.upload_batch()
             elif method == "POST" and rel == "/consumer-tokens":
                 self.create_consumer_token()
+            elif method == "GET" and rel == "/admin/stats":
+                self.admin_stats()
             elif method == "GET" and rel == "/records":
                 self.fetch_records(qs)
             elif method == "GET" and rel == "/batches":
@@ -875,8 +970,29 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
         principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
         if not principal:
             return
+        started = time.perf_counter()
         body = self.read_json(MAX_BATCH_BYTES)
+        if not isinstance(body, dict):
+            raise ValueError("JSON body must be an object")
+        read_ms = (time.perf_counter() - started) * 1000
+        records = body.get("records") or []
+        deleted = body.get("deleted") or []
+        batch_id = str(body.get("batch_id") or "")
+        store_started = time.perf_counter()
         ack = self.store_batch(body, principal["device_id"])
+        store_ms = (time.perf_counter() - store_started) * 1000
+        total_ms = (time.perf_counter() - started) * 1000
+        logger.info(
+            "batch_upload batch_id=%s device_id=%s records=%d deleted=%d duplicate=%s read_ms=%.1f store_ms=%.1f total_ms=%.1f",
+            batch_id,
+            principal["device_id"],
+            len(records) if isinstance(records, list) else 0,
+            len(deleted) if isinstance(deleted, list) else 0,
+            ack.get("duplicate"),
+            read_ms,
+            store_ms,
+            total_ms,
+        )
         self.write_json(ack)
 
     def store_batch(self, body: dict[str, Any], auth_device_id: str) -> dict[str, Any]:
@@ -1148,6 +1264,11 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 "next_cursor": make_cursor(offset, len(batches), limit),
             }
         )
+
+    def admin_stats(self) -> None:
+        if not self.require_auth("admin:devices"):
+            return
+        self.write_json(self.store.stats())
 
     def admin_revoke_device(self, device_id: str) -> None:
         if not self.require_auth("admin:devices"):

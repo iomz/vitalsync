@@ -6,13 +6,13 @@
     {
       "layers" : [
         {
-          "image-name" : "a_clean_app_icon_style_graphic_on_a_dark_navy_blue.png",
-          "name" : "a_clean_app_icon_style_graphic_on_a_dark_navy_blue",
+          "image-name" : "Vitalsync.png",
+          "name" : "Vitalsync",
           "position" : {
-            "scale" : 1,
+            "scale" : 0.95,
             "translation-in-points" : [
               0,
-              52.42983096882381
+              0
             ]
           }
         }
