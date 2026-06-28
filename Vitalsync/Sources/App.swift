@@ -462,25 +462,25 @@ struct SyncView: View {
                     Button("Export debug bundle") { showingDebugBundle = true }
                     Button("Reset sync history", role: .destructive) { showResetSyncHistory = true }
                         .disabled(engine.isSyncing)
+                        .confirmationDialog(
+                            "Reset sync history?",
+                            isPresented: $showResetSyncHistory,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Reset", role: .destructive) {
+                                Task {
+                                    await engine.resetSyncHistory(
+                                        typeGroups: deps.enabledTypeGroups.filter(\.enabled)
+                                    )
+                                }
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("The next sync will re-query all enabled Health data from HealthKit.")
+                        }
                 }
             }
             .navigationTitle("Sync")
-            .confirmationDialog(
-                "Reset sync history?",
-                isPresented: $showResetSyncHistory,
-                titleVisibility: .visible
-            ) {
-                Button("Reset", role: .destructive) {
-                    Task {
-                        await engine.resetSyncHistory(
-                            typeGroups: deps.enabledTypeGroups.filter(\.enabled)
-                        )
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("The next sync will re-query all enabled Health data from HealthKit.")
-            }
         }
         .sheet(isPresented: $showingDebugBundle) {
             DebugBundleView()

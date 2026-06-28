@@ -199,14 +199,15 @@ final class SyncEngine: ObservableObject {
             lastDeletedCount = result.totalDeleted
 
             // 2. Split into batches ≤ 1 MiB, newest 30 days first
-            syncStatus = "Building batches"
+            syncStatus = "Building batches: 0 of \(allRecords.count) records"
             let batches = try await splitIntoBatches(records: allRecords, deleted: allDeleted)
+            syncStatus = "Prepared \(batches.count) new batch(es)"
 
             // 3. Upload each batch (retry pending first, then new)
             let pending = try await queue.pendingBatches()
             let uploadBatches = pending.batches + batches
             for (index, batch) in uploadBatches.enumerated() {
-                syncStatus = "Uploading \(index + 1) of \(uploadBatches.count)"
+                syncStatus = "Uploading \(index + 1) of \(uploadBatches.count): \(batch.records.count) records"
                 try await uploadWithFallback(batch)
                 await queue.dequeue(batchId: batch.batchId)
                 result.batchesSent += 1
@@ -429,16 +430,8 @@ final class SyncEngine: ObservableObject {
         var batches: [VitalsyncBatch] = []
         var chunk: [VitalsyncRecord] = []
         var deletedChunk: [VitalsyncTombstone] = []
-
-        func encodedSize(records: [VitalsyncRecord], deleted: [VitalsyncTombstone]) throws -> Int {
-            let batch = VitalsyncBatch.make(
-                deviceId: deviceId,
-                sequence: sequenceCounter + 1,
-                records: records,
-                deleted: deleted
-            )
-            return try JSONEncoder.vitalsync.encode(batch).count
-        }
+        var estimatedChunkBytes = try emptyBatchSize(deviceId: deviceId)
+        let targetBatchBytes = Self.maxBatchBytes - 8_192
 
         func flush() throws {
             guard !chunk.isEmpty || !deletedChunk.isEmpty else { return }
@@ -454,37 +447,54 @@ final class SyncEngine: ObservableObject {
             batches.append(batch)
             chunk = []
             deletedChunk = []
+            estimatedChunkBytes = try emptyBatchSize(deviceId: deviceId)
         }
 
         for (index, record) in records.enumerated() {
-            let candidate = chunk + [record]
-            if try encodedSize(records: candidate, deleted: deletedChunk) > Self.maxBatchBytes {
+            let recordBytes = try JSONEncoder.vitalsync.encode(record).count
+            let separatorBytes = chunk.isEmpty ? 0 : 1
+            if estimatedChunkBytes + recordBytes + separatorBytes > targetBatchBytes {
                 try flush()
-                guard try encodedSize(records: [record], deleted: []) <= Self.maxBatchBytes else {
+                guard recordBytes + estimatedChunkBytes <= targetBatchBytes else {
                     throw SyncError.batchTooLarge
                 }
             }
             chunk.append(record)
-            if index.isMultiple(of: 5_000) {
+            estimatedChunkBytes += recordBytes + (chunk.count == 1 ? 0 : 1)
+            if index.isMultiple(of: 1_000) {
+                syncStatus = "Building batches: \(index + 1) of \(records.count) records, \(batches.count) ready"
                 await Task.yield()
             }
         }
 
         for (index, tombstone) in deleted.enumerated() {
-            let candidate = deletedChunk + [tombstone]
-            if try encodedSize(records: chunk, deleted: candidate) > Self.maxBatchBytes {
+            let tombstoneBytes = try JSONEncoder.vitalsync.encode(tombstone).count
+            let separatorBytes = deletedChunk.isEmpty ? 0 : 1
+            if estimatedChunkBytes + tombstoneBytes + separatorBytes > targetBatchBytes {
                 try flush()
-                guard try encodedSize(records: [], deleted: [tombstone]) <= Self.maxBatchBytes else {
+                guard tombstoneBytes + estimatedChunkBytes <= targetBatchBytes else {
                     throw SyncError.batchTooLarge
                 }
             }
             deletedChunk.append(tombstone)
-            if index.isMultiple(of: 5_000) {
+            estimatedChunkBytes += tombstoneBytes + (deletedChunk.count == 1 ? 0 : 1)
+            if index.isMultiple(of: 1_000) {
+                syncStatus = "Building batches: \(records.count) records, \(index + 1) of \(deleted.count) deletions, \(batches.count) ready"
                 await Task.yield()
             }
         }
 
         try flush()
         return batches
+    }
+
+    private func emptyBatchSize(deviceId: String) throws -> Int {
+        let batch = VitalsyncBatch.make(
+            deviceId: deviceId,
+            sequence: sequenceCounter + 1,
+            records: [],
+            deleted: []
+        )
+        return try JSONEncoder.vitalsync.encode(batch).count
     }
 }

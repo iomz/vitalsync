@@ -109,6 +109,8 @@ Vitalsync uses two iOS background mechanisms:
 
 Background execution is still controlled by iOS. The six-hour interval is a throttle and earliest request time, not a guaranteed schedule. HealthKit observer wakes and app refresh wakes both call the same incremental sync path, which uploads new records, stores anchors only after successful upload, and retries queued batches first.
 
+The incremental sync cursor is HealthKit's `HKQueryAnchor`, persisted locally per sample type. Each sync asks HealthKit for records and deletions since the saved anchor. Vitalsync saves the new anchor only after pending and new batches upload successfully, so failed uploads are re-queried on the next sync.
+
 Sync summary UI is stored in app `UserDefaults`: last attempt time, last successful sync time, counts, and last error. Anchors and pending upload batches are stored in the app data container. Installing a new build through Xcode with the same bundle ID normally preserves that container; deleting the app removes these app data files. Keychain credentials can survive app deletion depending on iOS behavior and signing identity.
 
 Retry pending uploads only retries queue files that still decode as current `VitalsyncBatch` JSON. If an older or corrupt queue file cannot be decoded, the app quarantines it, removes it from the pending count, and reports that the unreadable pending batch was skipped. Because anchors are saved only after successful upload, running Sync now re-queries data that was not uploaded.

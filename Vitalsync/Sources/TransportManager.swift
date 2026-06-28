@@ -335,7 +335,7 @@ final class TransportManager: NSObject, ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(batch.batchId, forHTTPHeaderField: "Idempotency-Key")
         req.httpBody = try JSONEncoder.vitalsync.encode(batch)
-        req.timeoutInterval = 60
+        req.timeoutInterval = 180
 
         // Log only metadata
         log.info("HTTPS upload: batchId=\(batch.batchId) records=\(batch.records.count)")
