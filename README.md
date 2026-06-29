@@ -172,6 +172,43 @@ curl -sS "http://127.0.0.1:8790/vitalsync/v1/admin/stats" \
 
 The stats response includes database size, device/client counts, batch totals, record totals, and per-sample-type counts/latest timestamps. Receiver logs also include one `batch_upload` line per accepted upload with batch ID, record counts, duplicate flag, JSON read time, SQLite store time, and total request time.
 
+### Receiver backup and restore
+
+The receiver stores all durable state in one SQLite database. Docker Compose uses the `vitalsync-data` volume and stores the database at `/data/vitalsync.sqlite3` inside the container. Direct local runs use `VITALSYNC_DB`, or `./vitalsync.sqlite3` when `VITALSYNC_DB` is unset.
+
+For a Docker Compose backup, stop the receiver first so SQLite has a quiet checkpoint, then copy the database files out of the named volume:
+
+```sh
+mkdir -p backups
+docker compose stop vitalsync-receiver
+docker run --rm \
+  -v vitalsync-data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/'
+docker compose up -d vitalsync-receiver
+```
+
+For a direct local receiver backup, stop the receiver and copy the configured database file plus any SQLite sidecars:
+
+```sh
+mkdir -p backups
+cp "${VITALSYNC_DB:-vitalsync.sqlite3}"* backups/
+```
+
+To restore Docker Compose data, stop the receiver, keep a copy of the current volume contents, copy the backup into the volume, then start the receiver:
+
+```sh
+docker compose stop vitalsync-receiver
+mkdir -p backups/pre-restore
+docker run --rm \
+  -v vitalsync-data:/data \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/pre-restore/ 2>/dev/null || true; cp /backup/vitalsync.sqlite3* /data/'
+docker compose up -d vitalsync-receiver
+```
+
+Restoring an older receiver database can make iOS HealthKit anchors newer than receiver data. After restoring, open the app, reset sync history, and run Sync now so the app re-queries HealthKit and repopulates missing receiver records. Receiver upserts are idempotent by `source` and `source_id`, so repeated records collapse instead of duplicating.
+
 Uploaded and queried timestamps must be valid ISO-8601 values. The receiver normalizes accepted timestamps to UTC before storing them.
 
 WebTransport upload is specified but not implemented in this stdlib receiver; iOS falls back to `POST /batches`.
