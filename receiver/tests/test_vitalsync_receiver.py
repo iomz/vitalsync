@@ -89,6 +89,20 @@ class ReceiverTest(unittest.TestCase):
                     "value": {"quantity": 120},
                     "unit": "count",
                     "metadata": {},
+                },
+                {
+                    "schema": "vitalsync.record.v1",
+                    "source": "apple_health_daily",
+                    "source_id": "daily_step_count_2026-06-26",
+                    "sample_type": "daily_step_count",
+                    "source_bundle_id": None,
+                    "source_name": "Apple Health Daily Steps",
+                    "start_time": "2026-06-26T00:00:00+09:00",
+                    "end_time": "2026-06-27T00:00:00+09:00",
+                    "timezone": "Asia/Tokyo",
+                    "value": {"quantity": 9123},
+                    "unit": "count",
+                    "metadata": {"aggregate": "day", "date": "2026-06-26"},
                 }
             ],
             "deleted": [],
@@ -103,7 +117,7 @@ class ReceiverTest(unittest.TestCase):
             },
         )
         self.assertEqual(status, 200)
-        self.assertEqual(ack["accepted"], 1)
+        self.assertEqual(ack["accepted"], 2)
         self.assertFalse(ack["duplicate"])
 
         status, duplicate = self.request(
@@ -136,6 +150,15 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(records["records"][0]["schema"], "vitalsync.record.v1")
         self.assertEqual(records["records"][0]["source_id"], "sample_1")
 
+        status, daily_records = self.request(
+            "GET",
+            "/records?sample_type=daily_step_count&limit=10",
+            headers={"Authorization": f"Bearer {consumer['access_token']}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(daily_records["records"][0]["source_id"], "daily_step_count_2026-06-26")
+        self.assertEqual(daily_records["records"][0]["value"]["quantity"], 9123)
+
         status, stats = self.request(
             "GET",
             "/admin/stats",
@@ -147,11 +170,13 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(stats["devices"]["total"], 1)
         self.assertEqual(stats["devices"]["active"], 1)
         self.assertEqual(stats["batches"]["total"], 1)
-        self.assertEqual(stats["records"]["total"], 1)
-        self.assertEqual(stats["records"]["active"], 1)
+        self.assertEqual(stats["records"]["total"], 2)
+        self.assertEqual(stats["records"]["active"], 2)
         self.assertEqual(stats["records"]["deleted"], 0)
-        self.assertEqual(stats["records"]["by_sample_type"][0]["sample_type"], "step_count")
+        self.assertEqual(stats["records"]["by_sample_type"][0]["sample_type"], "daily_step_count")
         self.assertEqual(stats["records"]["by_sample_type"][0]["active"], 1)
+        self.assertEqual(stats["records"]["by_sample_type"][1]["sample_type"], "step_count")
+        self.assertEqual(stats["records"]["by_sample_type"][1]["active"], 1)
 
         status, error = self.request(
             "GET",

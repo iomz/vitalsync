@@ -74,6 +74,7 @@ struct VitalsyncQueryResult {
     let records: [VitalsyncRecord]
     let tombstones: [VitalsyncTombstone]
     let rawSampleCount: Int
+    let mappedSampleCount: Int
     let rawDeletedCount: Int
     let newAnchor: HKQueryAnchor?
 }
@@ -290,7 +291,7 @@ final class HealthKitManager: ObservableObject {
         let anchorKey = vitalsyncType.rawValue
         let savedAnchor = await anchors.load(for: anchorKey)
 
-        return try await withCheckedThrowingContinuation { cont in
+        let result = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<VitalsyncQueryResult, Error>) in
             let query = HKAnchoredObjectQuery(
                 type: sampleType,
                 predicate: nil,
@@ -321,12 +322,37 @@ final class HealthKitManager: ObservableObject {
                     records: records,
                     tombstones: tombstones,
                     rawSampleCount: rawSamples.count,
+                    mappedSampleCount: records.count,
                     rawDeletedCount: rawDeleted.count,
                     newAnchor: newAnchor
                 ))
             }
             store.execute(query)
         }
+
+        guard vitalsyncType == .stepCount,
+              let quantityType = sampleType as? HKQuantityType
+        else {
+            return result
+        }
+
+        let dailyRecords = try await queryDailyStepCountRecords(
+            quantityType: quantityType,
+            touchedRecords: result.records,
+            deletedCount: result.rawDeletedCount
+        )
+        guard !dailyRecords.isEmpty else { return result }
+
+        log.info("Added \(dailyRecords.count) daily step records")
+        return VitalsyncQueryResult(
+            sampleType: result.sampleType,
+            records: result.records + dailyRecords,
+            tombstones: result.tombstones,
+            rawSampleCount: result.rawSampleCount,
+            mappedSampleCount: result.mappedSampleCount,
+            rawDeletedCount: result.rawDeletedCount,
+            newAnchor: result.newAnchor
+        )
     }
 
     func commitAnchor(for result: VitalsyncQueryResult) async {
@@ -346,6 +372,108 @@ final class HealthKitManager: ObservableObject {
     }
 
     // MARK: Sample → VitalsyncRecord mapping
+
+    private func queryDailyStepCountRecords(
+        quantityType: HKQuantityType,
+        touchedRecords: [VitalsyncRecord],
+        deletedCount: Int
+    ) async throws -> [VitalsyncRecord] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let recentStart = calendar.date(byAdding: .day, value: -30, to: today) ?? today
+        var dayStarts = Set(touchedRecords.map { calendar.startOfDay(for: $0.startTime) })
+
+        if deletedCount > 0 || dayStarts.isEmpty {
+            for offset in 0...30 {
+                if let day = calendar.date(byAdding: .day, value: -offset, to: today) {
+                    dayStarts.insert(day)
+                }
+            }
+        }
+
+        guard let firstDay = dayStarts.min(),
+              let lastDay = dayStarts.max(),
+              let queryEnd = calendar.date(byAdding: .day, value: 1, to: lastDay)
+        else {
+            return []
+        }
+
+        let queryStart = min(firstDay, recentStart)
+        let sourceIdPrefix = dailyStepSourceIdPrefix()
+        let dateFormatter = dailyStepDateFormatter()
+        var interval = DateComponents()
+        interval.day = 1
+
+        return try await withCheckedThrowingContinuation { cont in
+            let query = HKStatisticsCollectionQuery(
+                quantityType: quantityType,
+                quantitySamplePredicate: nil,
+                options: .cumulativeSum,
+                anchorDate: queryStart,
+                intervalComponents: interval
+            )
+
+            query.initialResultsHandler = { _, collection, error in
+                if let error {
+                    cont.resume(throwing: error)
+                    return
+                }
+                guard let collection else {
+                    cont.resume(returning: [])
+                    return
+                }
+
+                var records: [VitalsyncRecord] = []
+                collection.enumerateStatistics(from: queryStart, to: queryEnd) { statistics, _ in
+                    guard let sum = statistics.sumQuantity() else { return }
+                    let count = sum.doubleValue(for: .count())
+                    let start = calendar.startOfDay(for: statistics.startDate)
+                    guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
+                    let day = dateFormatter.string(from: start)
+
+                    records.append(VitalsyncRecord(
+                        schema: VitalsyncSchema.record,
+                        source: "apple_health_daily",
+                        sourceId: "\(sourceIdPrefix)_\(day)",
+                        sampleType: .dailyStepCount,
+                        sourceBundleId: nil,
+                        sourceName: "Apple Health Daily Steps",
+                        startTime: start,
+                        endTime: end,
+                        timezone: TimeZone.current.identifier,
+                        value: .quantity(.init(quantity: count)),
+                        unit: "count",
+                        metadata: [
+                            "aggregate": "day",
+                            "date": day,
+                        ]
+                    ))
+                }
+                cont.resume(returning: records)
+            }
+
+            store.execute(query)
+        }
+    }
+
+    private func dailyStepSourceIdPrefix() -> String {
+        let key = "daily_step_count_source_id_prefix"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let created = "daily_step_count_\(UUID().uuidString)"
+        UserDefaults.standard.set(created, forKey: key)
+        return created
+    }
+
+    private func dailyStepDateFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
 
     nonisolated private func mapSample(_ sample: HKSample, to type: VitalsyncSampleType) -> VitalsyncRecord? {
         let source = sample.sourceRevision.source

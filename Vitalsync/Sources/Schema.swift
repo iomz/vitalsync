@@ -89,6 +89,7 @@ struct VitalsyncTombstone: Codable {
 enum VitalsyncSampleType: String, Codable {
     case sleepAnalysis = "sleep_analysis"
     case stepCount = "step_count"
+    case dailyStepCount = "daily_step_count"
     case walkingRunningDistance = "walking_running_distance"
     case flightsClimbed = "flights_climbed"
     case activeEnergyBurned = "active_energy_burned"

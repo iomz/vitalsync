@@ -70,8 +70,8 @@ Direct package runs bind to `127.0.0.1` by default. Set `VITALSYNC_HOST=0.0.0.0`
 Docker Compose runs the receiver on port `8790`, binds it to localhost for reverse-proxy use, and persists SQLite data in the `vitalsync-data` Docker volume mounted at `/data`. Create a local env file first:
 
 ```sh
-cp receiver/.env.example receiver/.env
-VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" >> receiver/.env
+cp .env.example .env
+VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" >> .env
 docker compose up vitalsync-receiver
 ```
 
@@ -160,6 +160,8 @@ Fetch records:
 curl -sS "http://127.0.0.1:8790/vitalsync/v1/records?sample_type=step_count" \
   -H "Authorization: Bearer <READ_TOKEN>"
 ```
+
+Daily step totals are exposed as `sample_type=daily_step_count`.
 
 Inspect receiver storage stats:
 
