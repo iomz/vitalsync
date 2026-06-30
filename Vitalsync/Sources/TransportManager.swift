@@ -46,13 +46,18 @@ final class CredentialStore {
         set { keychainSet("refresh_token", value: newValue) }
     }
 
+    var dailyStepSourceIdPrefix: String? {
+        get { keychainGet("daily_step_count_source_id_prefix") }
+        set { keychainSet("daily_step_count_source_id_prefix", value: newValue) }
+    }
+
     var accessTokenExpiry: Date? {
         get { keychainGet("access_token_expiry").flatMap { TimeInterval($0).map { Date(timeIntervalSince1970: $0) } } }
         set { keychainSet("access_token_expiry", value: newValue.map { String($0.timeIntervalSince1970) }) }
     }
 
     func clear() {
-        for key in ["device_id", "access_token", "refresh_token", "access_token_expiry"] {
+        for key in ["device_id", "access_token", "refresh_token", "access_token_expiry", "daily_step_count_source_id_prefix"] {
             keychainSet(key, value: nil)
         }
     }

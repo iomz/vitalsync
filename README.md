@@ -71,7 +71,7 @@ Docker Compose runs the receiver on port `8790`, binds it to localhost for rever
 
 ```sh
 cp .env.example .env
-VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" >> .env
+printf 'VITALSYNC_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
 docker compose up vitalsync-receiver
 ```
 
@@ -203,7 +203,7 @@ mkdir -p backups/pre-restore
 docker run --rm \
   -v vitalsync-data:/data \
   -v "$PWD/backups:/backup" \
-  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/pre-restore/ 2>/dev/null || true; cp /backup/vitalsync.sqlite3* /data/'
+  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/pre-restore/ 2>/dev/null || true; rm -f /data/vitalsync.sqlite3 /data/vitalsync.sqlite3-wal /data/vitalsync.sqlite3-shm; cp /backup/vitalsync.sqlite3* /data/'
 docker compose up -d vitalsync-receiver
 ```
 
