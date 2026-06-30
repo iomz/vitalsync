@@ -42,6 +42,7 @@ WRITE_HEALTHKIT_SCOPE = "write:healthkit"
 SAMPLE_TYPE_SCOPES = {
     "sleep_analysis": "read:sleep",
     "step_count": "read:activity",
+    "daily_step_count": "read:activity",
     "walking_running_distance": "read:activity",
     "flights_climbed": "read:activity",
     "active_energy_burned": "read:activity",

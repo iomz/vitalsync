@@ -190,8 +190,8 @@ final class SyncEngine: ObservableObject {
                     guard let vitalsyncType = hkManager.vitalsyncSampleType(for: hkType) else { continue }
                     syncStatus = "Querying \(vitalsyncType.rawValue)"
                     let qr = try await hkManager.queryIncremental(sampleType: hkType, vitalsyncType: vitalsyncType)
-                    guard qr.rawSampleCount == qr.records.count else {
-                        throw SyncError.unmappedHealthSamples(vitalsyncType, qr.rawSampleCount, qr.records.count)
+                    guard qr.rawSampleCount == qr.mappedSampleCount else {
+                        throw SyncError.unmappedHealthSamples(vitalsyncType, qr.rawSampleCount, qr.mappedSampleCount)
                     }
                     queryResults.append(qr)
                     allRecords.append(contentsOf: qr.records)

@@ -70,8 +70,8 @@ Direct package runs bind to `127.0.0.1` by default. Set `VITALSYNC_HOST=0.0.0.0`
 Docker Compose runs the receiver on port `8790`, binds it to localhost for reverse-proxy use, and persists SQLite data in the `vitalsync-data` Docker volume mounted at `/data`. Create a local env file first:
 
 ```sh
-cp receiver/.env.example receiver/.env
-VITALSYNC_ADMIN_TOKEN="$(openssl rand -hex 32)" >> receiver/.env
+cp .env.example .env
+printf 'VITALSYNC_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
 docker compose up vitalsync-receiver
 ```
 
@@ -161,6 +161,8 @@ curl -sS "http://127.0.0.1:8790/vitalsync/v1/records?sample_type=step_count" \
   -H "Authorization: Bearer <READ_TOKEN>"
 ```
 
+Daily step totals are exposed as `sample_type=daily_step_count`.
+
 Inspect receiver storage stats:
 
 ```sh
@@ -169,6 +171,43 @@ curl -sS "http://127.0.0.1:8790/vitalsync/v1/admin/stats" \
 ```
 
 The stats response includes database size, device/client counts, batch totals, record totals, and per-sample-type counts/latest timestamps. Receiver logs also include one `batch_upload` line per accepted upload with batch ID, record counts, duplicate flag, JSON read time, SQLite store time, and total request time.
+
+### Receiver backup and restore
+
+The receiver stores all durable state in one SQLite database. Docker Compose uses the `vitalsync-data` volume and stores the database at `/data/vitalsync.sqlite3` inside the container. Direct local runs use `VITALSYNC_DB`, or `./vitalsync.sqlite3` when `VITALSYNC_DB` is unset.
+
+For a Docker Compose backup, stop the receiver first so SQLite has a quiet checkpoint, then copy the database files out of the named volume:
+
+```sh
+mkdir -p backups
+docker compose stop vitalsync-receiver
+docker run --rm \
+  -v vitalsync-data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/'
+docker compose up -d vitalsync-receiver
+```
+
+For a direct local receiver backup, stop the receiver and copy the configured database file plus any SQLite sidecars:
+
+```sh
+mkdir -p backups
+cp "${VITALSYNC_DB:-vitalsync.sqlite3}"* backups/
+```
+
+To restore Docker Compose data, stop the receiver, keep a copy of the current volume contents, copy the backup into the volume, then start the receiver:
+
+```sh
+docker compose stop vitalsync-receiver
+mkdir -p backups/pre-restore
+docker run --rm \
+  -v vitalsync-data:/data \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cp /data/vitalsync.sqlite3* /backup/pre-restore/ 2>/dev/null || true; rm -f /data/vitalsync.sqlite3 /data/vitalsync.sqlite3-wal /data/vitalsync.sqlite3-shm; cp /backup/vitalsync.sqlite3* /data/'
+docker compose up -d vitalsync-receiver
+```
+
+Restoring an older receiver database can make iOS HealthKit anchors newer than receiver data. After restoring, open the app, reset sync history, and run Sync now so the app re-queries HealthKit and repopulates missing receiver records. Receiver upserts are idempotent by `source` and `source_id`, so repeated records collapse instead of duplicating.
 
 Uploaded and queried timestamps must be valid ISO-8601 values. The receiver normalizes accepted timestamps to UTC before storing them.
 

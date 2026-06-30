@@ -19,6 +19,7 @@ __pycache__/
 *.egg-info/
 
 # ignore user .env for the receiver
-receiver/.env
-receiver/.env.*
-!receiver/.env.example
+.envrc
+.env
+.env.*
+!.env.example
