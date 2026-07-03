@@ -31,6 +31,10 @@ final class CredentialStore {
     static let shared = CredentialStore()
     private let service = "io.sazanka.vitalsync"
 
+    private init() {
+        migrateItemsToBackgroundAccessibleStorage()
+    }
+
     var deviceId: String? {
         get { keychainGet("device_id") }
         set { keychainSet("device_id", value: newValue) }
@@ -62,6 +66,13 @@ final class CredentialStore {
         }
     }
 
+    private func migrateItemsToBackgroundAccessibleStorage() {
+        for key in ["device_id", "access_token", "refresh_token", "access_token_expiry", "daily_step_count_source_id_prefix"] {
+            guard let value = keychainGet(key) else { continue }
+            keychainSet(key, value: value)
+        }
+    }
+
     private func keychainGet(_ key: String) -> String? {
         let q: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -83,11 +94,15 @@ final class CredentialStore {
             kSecAttrAccount: key,
         ]
         if let value {
-            let update: [CFString: Any] = [kSecValueData: value.data(using: .utf8)!]
+            let update: [CFString: Any] = [
+                kSecValueData: value.data(using: .utf8)!,
+                kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ]
             let status = SecItemUpdate(q as CFDictionary, update as CFDictionary)
             if status == errSecItemNotFound {
                 var add = q
                 add[kSecValueData] = value.data(using: .utf8)!
+                add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
                 SecItemAdd(add as CFDictionary, nil)
             }
         } else {

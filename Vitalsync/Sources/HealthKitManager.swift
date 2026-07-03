@@ -117,7 +117,7 @@ actor StepSampleDayStore {
     private func persist(_ index: [String: String]) {
         cached = index
         if let data = try? JSONEncoder().encode(index) {
-            try? data.write(to: url, options: [.atomic, .completeFileProtection])
+            try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         }
     }
 

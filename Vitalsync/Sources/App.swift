@@ -13,7 +13,7 @@ struct SyncVitalsyncIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let engine = AppDependencies.shared.syncEngine
         let groups = AppDependencies.shared.enabledTypeGroups
-        await engine.syncNow(typeGroups: groups)
+        await engine.syncNow(typeGroups: groups, trigger: .shortcut)
         let msg = engine.lastError ?? "Synced \(engine.lastBatchCount) batch(es)."
         return .result(dialog: IntentDialog(stringLiteral: msg))
     }
@@ -24,7 +24,7 @@ struct SyncSleepIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let group = HealthKitManager.typeGroups.first { $0.id == "sleep" }!
-        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group])
+        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group], trigger: .shortcut)
         return .result(dialog: "Sleep data synced.")
     }
 }
@@ -34,7 +34,7 @@ struct SyncActivityIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let group = HealthKitManager.typeGroups.first { $0.id == "activity" }!
-        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group])
+        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group], trigger: .shortcut)
         return .result(dialog: "Activity data synced.")
     }
 }
@@ -44,7 +44,7 @@ struct SyncVitalsIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let group = HealthKitManager.typeGroups.first { $0.id == "vitals" }!
-        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group])
+        await AppDependencies.shared.syncEngine.syncNow(typeGroups: [group], trigger: .shortcut)
         return .result(dialog: "Vitals synced.")
     }
 }
@@ -82,8 +82,8 @@ final class AppDependencies: ObservableObject {
         syncEngine = SyncEngine(hkManager: hkManager, transport: transport, credentials: credentials)
     }
 
-    func performBackgroundSync() async {
-        await syncEngine.performBackgroundSync(typeGroups: enabledTypeGroups)
+    func performBackgroundSync(trigger: SyncTrigger = .backgroundRefresh) async {
+        await syncEngine.performBackgroundSync(typeGroups: enabledTypeGroups, trigger: trigger)
     }
 
     func configureBackgroundSync() async {
@@ -118,7 +118,16 @@ final class AppDependencies: ObservableObject {
 
 @main
 struct VitalsyncApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var deps = AppDependencies.shared
+
+    init() {
+        Task { @MainActor in
+            let engine = AppDependencies.shared.syncEngine
+            engine.recordDiagnosticEvent("App initialized")
+            await AppDependencies.shared.configureBackgroundSync()
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -130,12 +139,29 @@ struct VitalsyncApp: App {
                     deps.handleRegistrationURL(url)
                 }
                 .task {
+                    deps.syncEngine.recordDiagnosticEvent("Foreground view task started")
                     await deps.transport.refreshConnectionStatus()
                     await deps.configureBackgroundSync()
                 }
+                .onChange(of: scenePhase) { _, newPhase in
+                    deps.syncEngine.recordDiagnosticEvent("Scene phase changed: \(scenePhaseLabel(newPhase))")
+                    if newPhase == .active {
+                        Task { await deps.configureBackgroundSync() }
+                    }
+                }
         }
         .backgroundTask(.appRefresh(SyncEngine.backgroundRefreshTaskIdentifier)) {
+            await AppDependencies.shared.syncEngine.recordDiagnosticEvent("BGAppRefreshTask handler started")
             await AppDependencies.shared.performBackgroundSync()
+        }
+    }
+
+    private func scenePhaseLabel(_ phase: ScenePhase) -> String {
+        switch phase {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
         }
     }
 }
@@ -451,6 +477,26 @@ struct SyncView: View {
                 Section("Background sync") {
                     Toggle("Enable background sync", isOn: $engine.backgroundSyncEnabled)
                 }
+                Section("Sync history") {
+                    if engine.syncHistory.isEmpty {
+                        Text("No sync attempts recorded")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(engine.syncHistory) { entry in
+                            SyncHistoryRow(entry: entry)
+                        }
+                    }
+                }
+                Section("Background diagnostics") {
+                    if engine.diagnosticEvents.isEmpty {
+                        Text("No diagnostic events recorded")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(engine.diagnosticEvents.prefix(20)) { event in
+                            SyncDiagnosticRow(event: event)
+                        }
+                    }
+                }
                 Section("Pending uploads") {
                     Text("\(engine.pendingCount) batch(es) pending")
                         .foregroundStyle(engine.pendingCount > 0 ? .orange : .secondary)
@@ -460,16 +506,16 @@ struct SyncView: View {
                 }
                 Section("Debug") {
                     Button("Export debug bundle") { showingDebugBundle = true }
-                    Button("Reset sync history", role: .destructive) { showResetSyncHistory = true }
+                    Button("Reset sync anchors", role: .destructive) { showResetSyncHistory = true }
                         .disabled(engine.isSyncing)
                         .confirmationDialog(
-                            "Reset sync history?",
+                            "Reset sync anchors?",
                             isPresented: $showResetSyncHistory,
                             titleVisibility: .visible
                         ) {
                             Button("Reset", role: .destructive) {
                                 Task {
-                                    await engine.resetSyncHistory(
+                                    await engine.resetSyncAnchors(
                                         typeGroups: deps.enabledTypeGroups.filter(\.enabled)
                                     )
                                 }
@@ -492,6 +538,71 @@ struct SyncView: View {
 
     private func localTimestamp(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .standard)
+    }
+}
+
+struct SyncHistoryRow: View {
+    let entry: SyncHistoryEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(entry.trigger.displayName, systemImage: iconName)
+                    .foregroundStyle(iconColor)
+                Spacer()
+                Text(entry.startedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text(entry.outcome.displayName)
+                    .foregroundStyle(iconColor)
+                Spacer()
+                Text("\(entry.records) records")
+                Text("\(entry.deleted) deleted")
+                Text("\(entry.batches) batches")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            if let error = entry.error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var iconName: String {
+        switch entry.outcome {
+        case .running: return "clock"
+        case .succeeded: return "checkmark.circle.fill"
+        case .deferred: return "clock"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        switch entry.outcome {
+        case .running: return .orange
+        case .succeeded: return .green
+        case .deferred: return .orange
+        case .failed: return .red
+        }
+    }
+}
+
+struct SyncDiagnosticRow: View {
+    let event: SyncDiagnosticEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(event.message)
+                .font(.caption)
+                .foregroundStyle(.primary)
+            Text(event.timestamp.formatted(date: .abbreviated, time: .standard))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -722,6 +833,9 @@ struct DebugBundleView: View {
         Pending batches: \(engine.pendingCount)
         Sync status: \(engine.syncStatus ?? "idle")
         Last error: \(engine.lastError ?? "none")
+
+        Recent diagnostics:
+        \(engine.diagnosticEvents.prefix(20).map { "\($0.timestamp.formatted(date: .abbreviated, time: .standard)) \($0.message)" }.joined(separator: "\n"))
 
         [Raw health values are excluded from debug bundles]
         """
