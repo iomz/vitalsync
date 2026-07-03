@@ -38,6 +38,27 @@ struct SyncResult {
     var completedAt: Date = .now
 }
 
+struct SyncPhaseEvent: Codable {
+    let name: String
+    let startedAt: Date
+    var completedAt: Date?
+    var detail: String?
+}
+
+struct SyncSampleTypeSummary: Codable {
+    let sampleType: String
+    let rawSamples: Int
+    let mappedRecords: Int
+    let deleted: Int
+}
+
+struct SyncBatchSummary: Codable {
+    var prepared: Int = 0
+    var uploaded: Int = 0
+    var queued: Int = 0
+    var quarantined: Int = 0
+}
+
 enum SyncTrigger: String, Codable {
     case manual
     case shortcut
@@ -82,6 +103,9 @@ struct SyncHistoryEntry: Identifiable, Codable {
     var deleted: Int
     var batches: Int
     var error: String?
+    var phases: [SyncPhaseEvent]?
+    var sampleTypes: [SyncSampleTypeSummary]?
+    var batchSummary: SyncBatchSummary?
 }
 
 struct SyncDiagnosticEvent: Identifiable, Codable {
@@ -236,11 +260,32 @@ final class SyncEngine: ObservableObject {
         lastDeletedCount = 0
         syncStatus = "Preparing"
         var result = SyncResult()
+        var phases: [SyncPhaseEvent] = []
+        var sampleSummaries: [SyncSampleTypeSummary] = []
+        var batchSummary = SyncBatchSummary()
+
+        func startPhase(_ name: String, detail: String? = nil) -> Int {
+            phases.append(SyncPhaseEvent(name: name, startedAt: .now, completedAt: nil, detail: detail))
+            return phases.count - 1
+        }
+
+        func finishPhase(_ index: Int, detail: String? = nil) {
+            guard phases.indices.contains(index) else { return }
+            phases[index].completedAt = .now
+            if let detail {
+                phases[index].detail = detail
+            }
+        }
+
         saveSyncState()
 
         do {
+            try Task.checkCancellation()
             let enabledGroups = typeGroups.filter(\.enabled)
+            let authPhase = startPhase("authorization", detail: "\(enabledGroups.count) enabled groups")
             try await ensureHealthAuthorization(for: enabledGroups)
+            finishPhase(authPhase)
+            try Task.checkCancellation()
 
             // 1. Query all enabled type groups incrementally
             var allRecords: [VitalsyncRecord] = []
@@ -251,13 +296,22 @@ final class SyncEngine: ObservableObject {
                 for hkType in group.queryTypes {
                     guard let vitalsyncType = hkManager.vitalsyncSampleType(for: hkType) else { continue }
                     syncStatus = "Querying \(vitalsyncType.rawValue)"
+                    let queryPhase = startPhase("query", detail: vitalsyncType.rawValue)
                     let qr = try await hkManager.queryIncremental(sampleType: hkType, vitalsyncType: vitalsyncType)
+                    finishPhase(queryPhase, detail: "\(vitalsyncType.rawValue): \(qr.records.count) records, \(qr.tombstones.count) deleted")
                     guard qr.rawSampleCount == qr.mappedSampleCount else {
                         throw SyncError.unmappedHealthSamples(vitalsyncType, qr.rawSampleCount, qr.mappedSampleCount)
                     }
+                    sampleSummaries.append(SyncSampleTypeSummary(
+                        sampleType: vitalsyncType.rawValue,
+                        rawSamples: qr.rawSampleCount,
+                        mappedRecords: qr.mappedSampleCount,
+                        deleted: qr.rawDeletedCount
+                    ))
                     queryResults.append(qr)
                     allRecords.append(contentsOf: qr.records)
                     allDeleted.append(contentsOf: qr.tombstones)
+                    try Task.checkCancellation()
                 }
             }
 
@@ -268,23 +322,37 @@ final class SyncEngine: ObservableObject {
 
             // 2. Split into batches ≤ 1 MiB, newest 30 days first
             syncStatus = "Building batches: 0 of \(allRecords.count) records"
+            let batchPhase = startPhase("batch", detail: "\(allRecords.count) records, \(allDeleted.count) deleted")
             let batches = try await splitIntoBatches(records: allRecords, deleted: allDeleted)
+            batchSummary.prepared = batches.count
+            finishPhase(batchPhase, detail: "\(batches.count) prepared")
             syncStatus = "Prepared \(batches.count) new batch(es)"
+            try Task.checkCancellation()
 
             // 3. Upload each batch (retry pending first, then new)
+            let pendingPhase = startPhase("pending queue")
             let pending = try await queue.pendingBatches()
+            batchSummary.quarantined = pending.quarantinedFiles.count
+            finishPhase(pendingPhase, detail: "\(pending.batches.count) pending, \(pending.quarantinedFiles.count) quarantined")
             let uploadBatches = pending.batches + batches
             for (index, batch) in uploadBatches.enumerated() {
+                try Task.checkCancellation()
                 syncStatus = "Uploading \(index + 1) of \(uploadBatches.count): \(batch.records.count) records"
+                let uploadPhase = startPhase("upload", detail: batch.batchId)
                 try await uploadWithFallback(batch)
+                finishPhase(uploadPhase, detail: "\(batch.records.count) records")
                 await queue.dequeue(batchId: batch.batchId)
                 result.batchesSent += 1
+                batchSummary.uploaded = result.batchesSent
             }
+            try Task.checkCancellation()
 
             syncStatus = "Saving sync history"
+            let anchorPhase = startPhase("anchor commit", detail: "\(queryResults.count) query results")
             for queryResult in queryResults {
                 await hkManager.commitAnchor(for: queryResult)
             }
+            finishPhase(anchorPhase)
 
             result.completedAt = .now
             lastSyncDate = result.completedAt
@@ -303,15 +371,23 @@ final class SyncEngine: ObservableObject {
                 records: result.totalRecords,
                 deleted: result.totalDeleted,
                 batches: result.batchesSent,
-                error: lastError
+                error: lastError,
+                phases: phases,
+                sampleTypes: sampleSummaries,
+                batchSummary: batchSummary
             )
 
         } catch {
             result.completedAt = .now
             lastAttemptDate = result.completedAt
             lastBatchCount = result.batchesSent
+            batchSummary.queued = await queue.count()
             let outcome: SyncOutcome
-            if shouldDeferProtectedHealthDataError(error, trigger: trigger) {
+            if error is CancellationError, trigger == .backgroundHealthKit || trigger == .backgroundRefresh {
+                outcome = .deferred
+                lastError = "Background sync was cancelled before completion."
+                recordDiagnosticEvent("Sync deferred: \(trigger.displayName), cancelled")
+            } else if shouldDeferProtectedHealthDataError(error, trigger: trigger) {
                 outcome = .deferred
                 lastError = "Protected health data is inaccessible; deferred until device unlock or HealthKit wake."
                 log.info("Sync deferred because protected Health data is inaccessible")
@@ -329,7 +405,10 @@ final class SyncEngine: ObservableObject {
                 records: result.totalRecords,
                 deleted: result.totalDeleted,
                 batches: result.batchesSent,
-                error: lastError
+                error: lastError,
+                phases: phases,
+                sampleTypes: sampleSummaries,
+                batchSummary: batchSummary
             )
         }
 
@@ -376,14 +455,15 @@ final class SyncEngine: ObservableObject {
         lastBatchCount = 0
         saveSyncState()
         defer { Task { @MainActor in isSyncing = false } }
+        var sent = 0
 
         do {
             let pending = try await queue.pendingBatches()
-            var sent = 0
             for batch in pending.batches {
                 try await uploadWithFallback(batch)
                 await queue.dequeue(batchId: batch.batchId)
                 sent += 1
+                lastBatchCount = sent
             }
             lastBatchCount = sent
             if !pending.quarantinedFiles.isEmpty {
@@ -408,7 +488,7 @@ final class SyncEngine: ObservableObject {
                 completedAt: .now,
                 records: 0,
                 deleted: 0,
-                batches: lastBatchCount,
+                batches: sent,
                 error: lastError
             )
         }
@@ -541,6 +621,7 @@ final class SyncEngine: ObservableObject {
 
     private func loadSyncState() {
         let defaults = UserDefaults.standard
+        var normalizedHistory = false
         lastSyncDate = defaults.object(forKey: Self.lastSyncDateKey) as? Date
         lastAttemptDate = defaults.object(forKey: Self.lastAttemptDateKey) as? Date
         lastError = defaults.string(forKey: Self.lastErrorKey)
@@ -550,11 +631,22 @@ final class SyncEngine: ObservableObject {
         lastDeletedCount = defaults.integer(forKey: Self.lastDeletedCountKey)
         if let data = defaults.data(forKey: Self.syncHistoryKey),
            let entries = try? JSONDecoder.vitalsync.decode([SyncHistoryEntry].self, from: data) {
-            syncHistory = entries
+            syncHistory = entries.map { entry in
+                guard entry.outcome == .running else { return entry }
+                var interrupted = entry
+                interrupted.outcome = .failed
+                interrupted.completedAt = entry.completedAt ?? .now
+                interrupted.error = "Interrupted before completion."
+                normalizedHistory = true
+                return interrupted
+            }
         }
         if let data = defaults.data(forKey: Self.diagnosticEventsKey),
            let entries = try? JSONDecoder.vitalsync.decode([SyncDiagnosticEvent].self, from: data) {
             diagnosticEvents = entries
+        }
+        if normalizedHistory {
+            saveSyncState()
         }
     }
 
@@ -597,7 +689,10 @@ final class SyncEngine: ObservableObject {
             records: 0,
             deleted: 0,
             batches: 0,
-            error: nil
+            error: nil,
+            phases: nil,
+            sampleTypes: nil,
+            batchSummary: nil
         )
         syncHistory.insert(entry, at: 0)
         if syncHistory.count > Self.maxHistoryEntries {
@@ -614,7 +709,10 @@ final class SyncEngine: ObservableObject {
         records: Int,
         deleted: Int,
         batches: Int,
-        error: String?
+        error: String?,
+        phases: [SyncPhaseEvent]? = nil,
+        sampleTypes: [SyncSampleTypeSummary]? = nil,
+        batchSummary: SyncBatchSummary? = nil
     ) {
         guard let index = syncHistory.firstIndex(where: { $0.id == id }) else { return }
         syncHistory[index].completedAt = completedAt
@@ -623,6 +721,9 @@ final class SyncEngine: ObservableObject {
         syncHistory[index].deleted = deleted
         syncHistory[index].batches = batches
         syncHistory[index].error = error
+        syncHistory[index].phases = phases
+        syncHistory[index].sampleTypes = sampleTypes
+        syncHistory[index].batchSummary = batchSummary
         saveSyncState()
     }
 

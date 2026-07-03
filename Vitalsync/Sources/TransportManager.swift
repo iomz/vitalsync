@@ -69,7 +69,10 @@ final class CredentialStore {
     private func migrateItemsToBackgroundAccessibleStorage() {
         for key in ["device_id", "access_token", "refresh_token", "access_token_expiry", "daily_step_count_source_id_prefix"] {
             guard let value = keychainGet(key) else { continue }
-            keychainSet(key, value: value)
+            let status = keychainSet(key, value: value)
+            if status != errSecSuccess {
+                log.error("Failed to migrate keychain item \(key): \(status)")
+            }
         }
     }
 
@@ -87,7 +90,8 @@ final class CredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
-    private func keychainSet(_ key: String, value: String?) {
+    @discardableResult
+    private func keychainSet(_ key: String, value: String?) -> OSStatus {
         let q: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -103,10 +107,12 @@ final class CredentialStore {
                 var add = q
                 add[kSecValueData] = value.data(using: .utf8)!
                 add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-                SecItemAdd(add as CFDictionary, nil)
+                return SecItemAdd(add as CFDictionary, nil)
             }
+            return status
         } else {
-            SecItemDelete(q as CFDictionary)
+            let status = SecItemDelete(q as CFDictionary)
+            return status == errSecItemNotFound ? errSecSuccess : status
         }
     }
 }

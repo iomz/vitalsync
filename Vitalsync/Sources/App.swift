@@ -834,11 +834,44 @@ struct DebugBundleView: View {
         Sync status: \(engine.syncStatus ?? "idle")
         Last error: \(engine.lastError ?? "none")
 
+        Recent sync history:
+        \(syncHistoryDetails)
+
         Recent diagnostics:
         \(engine.diagnosticEvents.prefix(20).map { "\($0.timestamp.formatted(date: .abbreviated, time: .standard)) \($0.message)" }.joined(separator: "\n"))
 
         [Raw health values are excluded from debug bundles]
         """
+    }
+
+    private var syncHistoryDetails: String {
+        engine.syncHistory.prefix(5).map { entry in
+            var lines = [
+                "\(entry.startedAt.formatted(date: .abbreviated, time: .standard)) \(entry.trigger.displayName) \(entry.outcome.displayName): \(entry.records) records, \(entry.deleted) deleted, \(entry.batches) batches"
+            ]
+            if let batchSummary = entry.batchSummary {
+                lines.append("  batches prepared=\(batchSummary.prepared) uploaded=\(batchSummary.uploaded) queued=\(batchSummary.queued) quarantined=\(batchSummary.quarantined)")
+            }
+            if let sampleTypes = entry.sampleTypes, !sampleTypes.isEmpty {
+                let samples = sampleTypes
+                    .map { "\($0.sampleType): raw=\($0.rawSamples), mapped=\($0.mappedRecords), deleted=\($0.deleted)" }
+                    .joined(separator: "; ")
+                lines.append("  samples \(samples)")
+            }
+            if let phases = entry.phases, !phases.isEmpty {
+                let phaseText = phases
+                    .map { phase in
+                        let duration = phase.completedAt.map { String(format: "%.1fs", $0.timeIntervalSince(phase.startedAt)) } ?? "running"
+                        return "\(phase.name)(\(duration))"
+                    }
+                    .joined(separator: " -> ")
+                lines.append("  phases \(phaseText)")
+            }
+            if let error = entry.error {
+                lines.append("  error \(error)")
+            }
+            return lines.joined(separator: "\n")
+        }.joined(separator: "\n")
     }
 
     var body: some View {

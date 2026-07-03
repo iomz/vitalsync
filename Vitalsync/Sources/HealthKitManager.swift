@@ -68,6 +68,10 @@ actor AnchorStore {
 }
 
 actor StepSampleDayStore {
+    enum LoadError: Error {
+        case unreadableIndex(Error)
+    }
+
     private let url: URL
     private var cached: [String: String]?
 
@@ -75,10 +79,14 @@ actor StepSampleDayStore {
         let app = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         try? FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
         url = app.appendingPathComponent("daily-step-sample-days.json")
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
     }
 
     func days(for sourceIds: [String], calendar: Calendar) -> Set<Date> {
-        let index = load()
+        guard let index = try? load() else { return [] }
         return Set(sourceIds.compactMap { sourceId in
             index[sourceId].flatMap(Self.dayFormatter.date(from:)).map { calendar.startOfDay(for: $0) }
         })
@@ -86,7 +94,7 @@ actor StepSampleDayStore {
 
     func save(records: [VitalsyncRecord], calendar: Calendar) {
         guard !records.isEmpty else { return }
-        var index = load()
+        guard var index = try? load() else { return }
         for record in records {
             index[record.sourceId] = Self.dayFormatter.string(from: calendar.startOfDay(for: record.startTime))
         }
@@ -95,18 +103,27 @@ actor StepSampleDayStore {
 
     func remove(sourceIds: [String]) {
         guard !sourceIds.isEmpty else { return }
-        var index = load()
+        guard var index = try? load() else { return }
         for sourceId in sourceIds {
             index.removeValue(forKey: sourceId)
         }
         persist(index)
     }
 
-    private func load() -> [String: String] {
+    private func load() throws -> [String: String] {
         if let cached { return cached }
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
-        else {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            cached = [:]
+            return [:]
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            log.error("Could not read daily step sample day index: \(error.localizedDescription)")
+            throw LoadError.unreadableIndex(error)
+        }
+        guard let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
             cached = [:]
             return [:]
         }
@@ -275,22 +292,23 @@ final class HealthKitManager: ObservableObject {
 
         for type in activeTypes {
             let key = backgroundDeliveryKey(for: type)
-            if observerQueries[key] == nil {
-                let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completionHandler, error in
-                    if let error {
-                        log.error("HealthKit observer update failed for \(key): \(error.localizedDescription)")
-                        completionHandler()
-                        return
-                    }
-
-                    Task { @MainActor in
-                        await onUpdate()
-                        completionHandler()
-                    }
-                }
-                observerQueries[key] = query
-                store.execute(query)
+            if let query = observerQueries.removeValue(forKey: key) {
+                store.stop(query)
             }
+            let query = HKObserverQuery(sampleType: type, predicate: nil) { _, completionHandler, error in
+                if let error {
+                    log.error("HealthKit observer update failed for \(key): \(error.localizedDescription)")
+                    completionHandler()
+                    return
+                }
+
+                Task { @MainActor in
+                    await onUpdate()
+                    completionHandler()
+                }
+            }
+            observerQueries[key] = query
+            store.execute(query)
 
             do {
                 try await enableBackgroundDelivery(for: type)
