@@ -31,6 +31,10 @@ final class CredentialStore {
     static let shared = CredentialStore()
     private let service = "io.sazanka.vitalsync"
 
+    private init() {
+        migrateItemsToBackgroundAccessibleStorage()
+    }
+
     var deviceId: String? {
         get { keychainGet("device_id") }
         set { keychainSet("device_id", value: newValue) }
@@ -62,6 +66,16 @@ final class CredentialStore {
         }
     }
 
+    private func migrateItemsToBackgroundAccessibleStorage() {
+        for key in ["device_id", "access_token", "refresh_token", "access_token_expiry", "daily_step_count_source_id_prefix"] {
+            guard let value = keychainGet(key) else { continue }
+            let status = keychainSet(key, value: value)
+            if status != errSecSuccess {
+                log.error("Failed to migrate keychain item \(key): \(status)")
+            }
+        }
+    }
+
     private func keychainGet(_ key: String) -> String? {
         let q: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -76,22 +90,29 @@ final class CredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
-    private func keychainSet(_ key: String, value: String?) {
+    @discardableResult
+    private func keychainSet(_ key: String, value: String?) -> OSStatus {
         let q: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: key,
         ]
         if let value {
-            let update: [CFString: Any] = [kSecValueData: value.data(using: .utf8)!]
+            let update: [CFString: Any] = [
+                kSecValueData: value.data(using: .utf8)!,
+                kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ]
             let status = SecItemUpdate(q as CFDictionary, update as CFDictionary)
             if status == errSecItemNotFound {
                 var add = q
                 add[kSecValueData] = value.data(using: .utf8)!
-                SecItemAdd(add as CFDictionary, nil)
+                add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                return SecItemAdd(add as CFDictionary, nil)
             }
+            return status
         } else {
-            SecItemDelete(q as CFDictionary)
+            let status = SecItemDelete(q as CFDictionary)
+            return status == errSecItemNotFound ? errSecSuccess : status
         }
     }
 }
