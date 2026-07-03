@@ -590,7 +590,7 @@ class ResponseSent(Exception):
 
 
 class VitalsyncHandler(BaseHTTPRequestHandler):
-    server_version = "Vitalsync/0.1"
+    server_version = "Vitalsync/0.2"
 
     @property
     def store(self) -> Store:
