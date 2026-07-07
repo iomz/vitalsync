@@ -192,17 +192,6 @@ struct ServerError: Codable, Error {
     let retryable: Bool
 }
 
-struct SessionTokenResponse: Codable {
-    let sessionToken: String
-    let expiresAt: Date
-    let transportUrl: String
-    enum CodingKeys: String, CodingKey {
-        case sessionToken = "session_token"
-        case expiresAt = "expires_at"
-        case transportUrl = "transport_url"
-    }
-}
-
 struct RegisterResponse: Codable {
     let deviceId: String
     let refreshToken: String

@@ -69,8 +69,7 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
   </div>
   <div class="nav-group">
     <div class="nav-label">Upload</div>
-    <a href="#transport">WebTransport</a>
-    <a href="#batches">Batches (fallback)</a>
+    <a href="#batches">Batches</a>
   </div>
   <div class="nav-group">
     <div class="nav-label">Fetch</div>
@@ -183,11 +182,11 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
   <div class="ep-head" onclick="toggle(this)">
     <span class="method POST">POST</span>
     <span class="ep-path">/vitalsync/v1/tokens/session</span>
-    <span class="ep-desc">Get short-lived WebTransport session token</span>
+    <span class="ep-desc">Reserved WebTransport session token endpoint</span>
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Session token lifetime: 5 minutes. Used as URL query param on WebTransport connection (browser WT API has limited custom header support).</div>
+    <div class="note">Reserved for future WebTransport support. Current stdlib receiver does not implement WebTransport upload, and current iOS uploads use <code>POST /batches</code>.</div>
     <h3>Request body</h3>
     <pre>{
   <span class="key">"device_id"</span>: <span class="str">"&lt;DEVICE_ID&gt;"</span>,
@@ -224,60 +223,17 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
 </div>
 </section>
 
-<section id="transport">
-<h2>WebTransport upload</h2>
-<div class="note">Endpoint: <code>https://receiver.example.com/vitalsync/v1/transport?token=&lt;session-token&gt;</code><br>Uses reliable bidirectional streams. Health payloads must not use datagrams.</div>
-
-<h3>Control stream — hello</h3>
-<pre><span class="comment">// App → Server (first message on control stream)</span>
-{
-  <span class="key">"type"</span>:        <span class="str">"hello"</span>,
-  <span class="key">"schema"</span>:      <span class="str">"vitalsync.control.v1"</span>,
-  <span class="key">"device_id"</span>:   <span class="str">"&lt;DEVICE_ID&gt;"</span>,
-  <span class="key">"app_version"</span>: <span class="str">"0.1.0"</span>,
-  <span class="key">"supports"</span>:    [<span class="str">"health.batch.v1"</span>, <span class="str">"tombstone.v1"</span>]
-}
-
-<span class="comment">// Server → App</span>
-{
-  <span class="key">"type"</span>:            <span class="str">"hello_ack"</span>,
-  <span class="key">"server_time"</span>:    <span class="str">"2026-06-26T10:12:30Z"</span>,
-  <span class="key">"max_batch_bytes"</span>: <span class="num">1048576</span>
-}</pre>
-
-<h3>Batch upload stream</h3>
-<pre><span class="comment">// App → Server</span>
-{
-  <span class="key">"type"</span>:       <span class="str">"batch"</span>,
-  <span class="key">"schema"</span>:     <span class="str">"vitalsync.batch.v1"</span>,
-  <span class="key">"batch_id"</span>:   <span class="str">"batch_01J..."</span>,
-  <span class="key">"device_id"</span>:  <span class="str">"dev_01J..."</span>,
-  <span class="key">"created_at"</span>: <span class="str">"2026-06-26T10:12:30+09:00"</span>,
-  <span class="key">"records"</span>:    [ <span class="comment">/* record objects */</span> ],
-  <span class="key">"deleted"</span>:    [ <span class="comment">/* tombstone objects */</span> ]
-}
-
-<span class="comment">// Server → App</span>
-{
-  <span class="key">"type"</span>:      <span class="str">"batch_ack"</span>,
-  <span class="key">"batch_id"</span>:  <span class="str">"batch_01J..."</span>,
-  <span class="key">"accepted"</span>:  <span class="num">120</span>,
-  <span class="key">"deleted"</span>:   <span class="num">3</span>,
-  <span class="key">"duplicate"</span>: <span class="num">false</span>
-}</pre>
-</section>
-
 <section id="batches">
-<h2>Batch upload (HTTPS fallback)</h2>
+<h2>Batch upload</h2>
 <div class="endpoint">
   <div class="ep-head" onclick="toggle(this)">
     <span class="method POST">POST</span>
     <span class="ep-path">/vitalsync/v1/batches</span>
-    <span class="ep-desc">Upload batch when WebTransport unavailable</span>
+    <span class="ep-desc">Upload batch over HTTPS</span>
     <span class="chevron">▼</span>
   </div>
   <div class="ep-body">
-    <div class="note">Exact same batch JSON schema as WebTransport. Idempotency-Key header is required and must equal batch_id. Auth requires a Bearer access token with <code>write:healthkit</code>.</div>
+    <div class="note">Primary upload path for current iOS clients. Idempotency-Key header is required and must equal batch_id. Auth requires a Bearer access token with <code>write:healthkit</code>.</div>
     <h3>Headers</h3>
     <table class="field-table">
       <tr><th>Header</th><th>Value</th></tr>
@@ -475,7 +431,7 @@ Authorization: Bearer vitalsync_consumer_...</pre>
   <tr><td class="fname">network_unavailable</td><td>✓</td><td>Transient network failure</td></tr>
   <tr><td class="fname">server_error</td><td>✓</td><td>5xx — retry with backoff</td></tr>
   <tr><td class="fname">token_expired</td><td>✓</td><td>Refresh access token then retry</td></tr>
-  <tr><td class="fname">webtransport_unavailable</td><td>✓</td><td>Fall back to HTTPS POST</td></tr>
+  <tr><td class="fname">webtransport_unavailable</td><td>✓</td><td>Reserved endpoint is unavailable; use HTTPS POST</td></tr>
   <tr><td class="fname">permission_denied</td><td>✗</td><td>HealthKit auth revoked</td></tr>
   <tr><td class="fname">device_revoked</td><td>✗</td><td>Device token revoked server-side</td></tr>
   <tr><td class="fname">unsupported_schema</td><td>✗</td><td>Schema version not supported</td></tr>

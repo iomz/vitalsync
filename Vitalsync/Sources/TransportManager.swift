@@ -1,6 +1,5 @@
 import Foundation
 import Security
-import WebKit
 import OSLog
 
 private let log = Logger(subsystem: "io.sazanka.vitalsync", category: "Transport")
@@ -8,19 +7,15 @@ private let log = Logger(subsystem: "io.sazanka.vitalsync", category: "Transport
 // MARK: - Transport errors
 
 enum TransportError: LocalizedError {
-    case webTransportUnavailable
-    case sessionTokenFetchFailed
+    case accessTokenUnavailable
     case streamError(String)
     case httpError(Int, String)
-    case timeout
 
     var errorDescription: String? {
         switch self {
-        case .webTransportUnavailable:  return "WebTransport not available on this device."
-        case .sessionTokenFetchFailed:  return "Failed to obtain session token."
+        case .accessTokenUnavailable:   return "Failed to obtain access token."
         case .streamError(let msg):     return "Stream error: \(msg)"
         case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
-        case .timeout:                  return "Upload timed out."
         }
     }
 }
@@ -126,13 +121,8 @@ final class TransportManager: NSObject, ObservableObject {
     @Published var serverBaseURLString: String {
         didSet {
             UserDefaults.standard.set(serverBaseURLString, forKey: "server_base_url")
-            webView = nil
         }
     }
-
-    // Hidden WKWebView that hosts the WebTransport JS shim
-    private var webView: WKWebView?
-    private var pendingContinuations: [String: CheckedContinuation<BatchAck, Error>] = [:]
 
     @Published var isConnected = false
     @Published var serverReachable: Bool? = nil
@@ -184,144 +174,7 @@ final class TransportManager: NSObject, ObservableObject {
         return normalized
     }
 
-    // MARK: - Upload via WebTransport (WKWebView shim)
-
-    func uploadViaWebTransport(_ batch: VitalsyncBatch) async throws -> BatchAck {
-        let sessionToken = try await fetchSessionToken()
-        let transportUrl = "\(serverBase)/transport?token=\(sessionToken)"
-
-        let batchJSON = try JSONEncoder.vitalsync.encode(batch)
-        guard let batchStr = String(data: batchJSON, encoding: .utf8) else {
-            throw TransportError.streamError("Batch JSON encoding failed")
-        }
-
-        let wv = try getOrCreateWebView()
-
-        return try await withCheckedThrowingContinuation { [weak self] cont in
-            guard let self else {
-                cont.resume(throwing: TransportError.webTransportUnavailable)
-                return
-            }
-            let batchId = batch.batchId
-            pendingContinuations[batchId] = cont
-
-            // Log only batch_id and record count, never raw values
-            log.info("Initiating WebTransport upload: batchId=\(batchId), records=\(batch.records.count), deleted=\(batch.deleted.count)")
-
-            let js = """
-            (async () => {
-              try {
-                if (typeof WebTransport === 'undefined') {
-                  window.webkit.messageHandlers.vitalsync.postMessage(
-                    JSON.stringify({ type: 'error', batchId: '\(batchId)', code: 'wt_unavailable' })
-                  );
-                  return;
-                }
-                const transport = new WebTransport('\(transportUrl)');
-                await transport.ready;
-
-                // Control stream: hello
-                const ctrl = await transport.createBidirectionalStream();
-                const ctrlWriter = ctrl.writable.getWriter();
-                const ctrlReader = ctrl.readable.getReader();
-                const hello = JSON.stringify({
-                  type: 'hello',
-                  schema: '\(VitalsyncSchema.control)',
-                  device_id: '\(credentials.deviceId ?? "")',
-                  app_version: '\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")',
-                  supports: ['health.batch.v1', 'tombstone.v1']
-                });
-                await ctrlWriter.write(new TextEncoder().encode(hello));
-
-                // Read hello_ack
-                const { value: ackData } = await ctrlReader.read();
-                const ack = JSON.parse(new TextDecoder().decode(ackData));
-                if (ack.type !== 'hello_ack') throw new Error('Expected hello_ack, got: ' + ack.type);
-
-                // Batch stream
-                const stream = await transport.createBidirectionalStream();
-                const writer = stream.writable.getWriter();
-                const reader = stream.readable.getReader();
-
-                const batchMsg = JSON.stringify({
-                  type: 'batch',
-                  \(batchStr.dropFirst().dropLast())
-                });
-                await writer.write(new TextEncoder().encode(batchMsg));
-
-                // Read batch_ack
-                const { value: batchAckData } = await reader.read();
-                const batchAck = JSON.parse(new TextDecoder().decode(batchAckData));
-
-                await transport.close();
-                window.webkit.messageHandlers.vitalsync.postMessage(JSON.stringify(batchAck));
-              } catch (e) {
-                window.webkit.messageHandlers.vitalsync.postMessage(
-                  JSON.stringify({ type: 'error', batchId: '\(batchId)', code: 'stream_error', message: e.message })
-                );
-              }
-            })();
-            """
-            wv.evaluateJavaScript(js)
-
-            // Timeout after 30s
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(30))
-                if let cont = self?.pendingContinuations.removeValue(forKey: batchId) {
-                    cont.resume(throwing: TransportError.timeout)
-                }
-            }
-        }
-    }
-
-    // MARK: - WKWebView setup
-
-    private func getOrCreateWebView() throws -> WKWebView {
-        if let wv = webView { return wv }
-
-        let config = WKWebViewConfiguration()
-        let handler = VitalsyncMessageHandler(transport: self)
-        config.userContentController.add(handler, name: "vitalsync")
-        let wv = WKWebView(frame: .zero, configuration: config)
-        // Load a minimal blank page so WebTransport JS API is available
-        wv.loadHTMLString("<html><body></body></html>", baseURL: serverBase)
-        webView = wv
-        return wv
-    }
-
-    // Called by WKScriptMessageHandler when JS posts a message
-    func handleJSMessage(_ body: String) {
-        guard
-            let data = body.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
-
-        let batchId = json["batch_id"] as? String
-            ?? json["batchId"] as? String
-            ?? ""
-
-        guard let cont = pendingContinuations.removeValue(forKey: batchId) else { return }
-
-        if let typeStr = json["type"] as? String, typeStr == "error" {
-            let code = json["code"] as? String ?? "unknown"
-            if code == "wt_unavailable" {
-                cont.resume(throwing: TransportError.webTransportUnavailable)
-            } else {
-                cont.resume(throwing: TransportError.streamError(json["message"] as? String ?? code))
-            }
-            return
-        }
-
-        // Decode BatchAck
-        if let ackData = try? JSONSerialization.data(withJSONObject: json),
-           let ack = try? JSONDecoder.vitalsync.decode(BatchAck.self, from: ackData) {
-            cont.resume(returning: ack)
-        } else {
-            cont.resume(throwing: TransportError.streamError("Could not decode batch_ack"))
-        }
-    }
-
-    // MARK: - HTTPS fallback
+    // MARK: - HTTPS upload
 
     func refreshConnectionStatus() async {
         guard hasRegisteredDevice else {
@@ -413,22 +266,6 @@ final class TransportManager: NSObject, ObservableObject {
 
     // MARK: - Token management
 
-    private func fetchSessionToken() async throws -> String {
-        let token = try await validAccessToken()
-        guard let deviceId = credentials.deviceId else { throw TransportError.sessionTokenFetchFailed }
-
-        var req = URLRequest(url: serverBase.appendingPathComponent("tokens/session"))
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder.vitalsync.encode(["device_id": deviceId, "capability": "webtransport_upload"])
-
-        let (data, response) = try await URLSession.shared.data(for: req)
-        try validateHTTPResponse(response, data: data)
-        let resp: SessionTokenResponse = try decodeServerJSON(data, context: "session token response")
-        return resp.sessionToken
-    }
-
     func validAccessToken() async throws -> String {
         if let token = credentials.accessToken,
            let expiry = credentials.accessTokenExpiry,
@@ -442,7 +279,7 @@ final class TransportManager: NSObject, ObservableObject {
         guard
             let refresh = credentials.refreshToken,
             let deviceId = credentials.deviceId
-        else { throw TransportError.sessionTokenFetchFailed }
+        else { throw TransportError.accessTokenUnavailable }
 
         var req = URLRequest(url: serverBase.appendingPathComponent("tokens/refresh"))
         req.httpMethod = "POST"
@@ -542,17 +379,5 @@ final class TransportManager: NSObject, ObservableObject {
             accessToken: try stringValue("access_token", "accessToken"),
             expiresAt: expiresAt
         )
-    }
-}
-
-// MARK: - WKScriptMessageHandler bridge
-
-private class VitalsyncMessageHandler: NSObject, WKScriptMessageHandler {
-    weak var transport: TransportManager?
-    init(transport: TransportManager) { self.transport = transport }
-
-    func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? String else { return }
-        Task { @MainActor in self.transport?.handleJSMessage(body) }
     }
 }

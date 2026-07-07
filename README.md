@@ -212,7 +212,8 @@ Restoring an older receiver database can make iOS HealthKit anchors newer than r
 
 Uploaded and queried timestamps must be valid ISO-8601 values. The receiver normalizes accepted timestamps to UTC before storing them.
 
-WebTransport upload is specified but not implemented in this stdlib receiver; iOS falls back to `POST /batches`.
+Uploads use HTTPS `POST /batches`.
+WebTransport is not implemented in this stdlib receiver or used by the iOS app.
 
 ### Revoke vs purge
 
