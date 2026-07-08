@@ -181,29 +181,6 @@ pre{background:var(--code-bg);border-radius:7px;padding:.75rem 1rem;font-family:
 <div class="endpoint">
   <div class="ep-head" onclick="toggle(this)">
     <span class="method POST">POST</span>
-    <span class="ep-path">/vitalsync/v1/tokens/session</span>
-    <span class="ep-desc">Reserved WebTransport session token endpoint</span>
-    <span class="chevron">▼</span>
-  </div>
-  <div class="ep-body">
-    <div class="note">Reserved for future WebTransport support. Current stdlib receiver does not implement WebTransport upload, and current iOS uploads use <code>POST /batches</code>.</div>
-    <h3>Request body</h3>
-    <pre>{
-  <span class="key">"device_id"</span>: <span class="str">"&lt;DEVICE_ID&gt;"</span>,
-  <span class="key">"capability"</span>: <span class="str">"webtransport_upload"</span>
-}</pre>
-    <h3>Response 200</h3>
-    <pre>{
-  <span class="key">"session_token"</span>: <span class="str">"&lt;SESSION_TOKEN&gt;"</span>,
-  <span class="key">"expires_at"</span>:    <span class="str">"2026-06-26T10:17:00Z"</span>,
-  <span class="key">"transport_url"</span>: <span class="str">"https://receiver.example.com/vitalsync/v1/transport?token=&lt;SESSION_TOKEN&gt;"</span>
-}</pre>
-  </div>
-</div>
-
-<div class="endpoint">
-  <div class="ep-head" onclick="toggle(this)">
-    <span class="method POST">POST</span>
     <span class="ep-path">/vitalsync/v1/tokens/refresh</span>
     <span class="ep-desc">Exchange refresh token for new access token</span>
     <span class="chevron">▼</span>
@@ -431,7 +408,6 @@ Authorization: Bearer vitalsync_consumer_...</pre>
   <tr><td class="fname">network_unavailable</td><td>✓</td><td>Transient network failure</td></tr>
   <tr><td class="fname">server_error</td><td>✓</td><td>5xx — retry with backoff</td></tr>
   <tr><td class="fname">token_expired</td><td>✓</td><td>Refresh access token then retry</td></tr>
-  <tr><td class="fname">webtransport_unavailable</td><td>✓</td><td>Reserved endpoint is unavailable; use HTTPS POST</td></tr>
   <tr><td class="fname">permission_denied</td><td>✗</td><td>HealthKit auth revoked</td></tr>
   <tr><td class="fname">device_revoked</td><td>✗</td><td>Device token revoked server-side</td></tr>
   <tr><td class="fname">unsupported_schema</td><td>✗</td><td>Schema version not supported</td></tr>
@@ -509,7 +485,7 @@ healthkit_devices (
 healthkit_tokens (
   token_hash  text primary key,
   device_id   text,
-  token_type  text not null,  <span class="comment">-- 'refresh' | 'access' | 'session' | 'consumer'</span>
+  token_type  text not null,  <span class="comment">-- 'refresh' | 'access' | 'consumer'</span>
   scopes_json json not null,
   expires_at  timestamptz,
   revoked_at  timestamptz
