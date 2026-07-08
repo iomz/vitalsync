@@ -13,7 +13,6 @@
 		111111111111111111111104 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111004 /* SyncEngine.swift */; };
 		111111111111111111111105 /* TransportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111005 /* TransportManager.swift */; };
 		111111111111111111111106 /* HealthKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111006 /* HealthKit.framework */; };
-		111111111111111111111107 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111007 /* WebKit.framework */; };
 		111111111111111111111108 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111008 /* Security.framework */; };
 		7536C5162FEF89C2004DFD3C /* Vitalsync.icon in Resources */ = {isa = PBXBuildFile; fileRef = 7536C5142FEF89C2004DFD3C /* Vitalsync.icon */; };
 		7536C5182FEF8B2B004DFD3C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7536C5172FEF8B2B004DFD3C /* Assets.xcassets */; };
@@ -26,7 +25,6 @@
 		111111111111111111111004 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
 		111111111111111111111005 /* TransportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportManager.swift; sourceTree = "<group>"; };
 		111111111111111111111006 /* HealthKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HealthKit.framework; path = System/Library/Frameworks/HealthKit.framework; sourceTree = SDKROOT; };
-		111111111111111111111007 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		111111111111111111111008 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		111111111111111111111009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		111111111111111111111010 /* Vitalsync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vitalsync.entitlements; sourceTree = "<group>"; };
@@ -42,7 +40,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				111111111111111111111106 /* HealthKit.framework in Frameworks */,
-				111111111111111111111107 /* WebKit.framework in Frameworks */,
 				111111111111111111111108 /* Security.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -103,7 +100,6 @@
 			isa = PBXGroup;
 			children = (
 				111111111111111111111006 /* HealthKit.framework */,
-				111111111111111111111007 /* WebKit.framework */,
 				111111111111111111111008 /* Security.framework */,
 			);
 			name = Frameworks;

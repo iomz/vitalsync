@@ -552,7 +552,7 @@ final class SyncEngine: ObservableObject {
         await syncNow(typeGroups: typeGroups, trigger: trigger)
     }
 
-    // MARK: Upload with fallback
+    // MARK: Upload
 
     private func uploadWithFallback(_ batch: VitalsyncBatch) async throws {
         do {
@@ -577,11 +577,11 @@ final class SyncEngine: ObservableObject {
 
         guard let transportError = error as? TransportError else { return false }
         switch transportError {
-        case .timeout, .streamError:
+        case .streamError:
             return true
         case .httpError(let code, _):
             return code == 408 || code == 429 || code >= 500
-        case .webTransportUnavailable, .sessionTokenFetchFailed:
+        case .accessTokenUnavailable:
             return false
         }
     }

@@ -33,7 +33,6 @@ SCHEMA_RECORD = "vitalsync.record.v1"
 SCHEMA_RECORDS = "vitalsync.records.v1"
 MAX_BATCH_BYTES = 1_048_576
 ACCESS_TOKEN_SECONDS = 3600
-SESSION_TOKEN_SECONDS = 300
 REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 365
 PAIRING_TOKEN_SECONDS = 600
 READ_HEALTHKIT_SCOPE = "read:healthkit"
@@ -630,8 +629,6 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 self.app_revoke_device()
             elif method == "POST" and rel == "/tokens/refresh":
                 self.refresh_token()
-            elif method == "POST" and rel == "/tokens/session":
-                self.session_token()
             elif method == "POST" and rel == "/batches":
                 self.upload_batch()
             elif method == "POST" and rel == "/consumer-tokens":
@@ -656,13 +653,6 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                 self.admin_purge_device(rel.split("/")[2])
             elif method == "POST" and rel == "/purge":
                 self.admin_purge_sample_type(qs)
-            elif rel == "/transport":
-                self.error_json(
-                    HTTPStatus.NOT_IMPLEMENTED,
-                    "webtransport_unavailable",
-                    "WebTransport requires an HTTP/3 server; use POST /batches fallback",
-                    retryable=True,
-                )
             elif method == "GET" and rel == "/health":
                 self.write_json({"ok": True, "server_time": iso(utcnow())})
             else:
@@ -939,33 +929,6 @@ class VitalsyncHandler(BaseHTTPRequestHandler):
                     conn, access, device_id, "access", principal["scopes"], expires
                 )
         self.write_json({"access_token": access, "expires_at": iso(expires)})
-
-    def session_token(self) -> None:
-        body = self.read_json()
-        principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
-        if not principal:
-            return
-        device_id = str(body.get("device_id") or "")
-        if principal["device_id"] != device_id:
-            self.error_json(
-                HTTPStatus.FORBIDDEN,
-                "permission_denied",
-                "device_id does not match token",
-            )
-            return
-        token = make_id("vitalsync_wt")
-        expires = utcnow() + dt.timedelta(seconds=SESSION_TOKEN_SECONDS)
-        with self.store.lock, self.store.connect() as conn:
-            self.store.insert_token(
-                conn, token, device_id, "session", [WRITE_HEALTHKIT_SCOPE], expires
-            )
-        self.write_json(
-            {
-                "session_token": token,
-                "expires_at": iso(expires),
-                "transport_url": f"{self.config.public_base_url}{API_PREFIX}/transport?token={token}",
-            }
-        )
 
     def upload_batch(self) -> None:
         principal = self.require_auth(WRITE_HEALTHKIT_SCOPE)
