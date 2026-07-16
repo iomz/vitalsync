@@ -51,6 +51,7 @@ SAMPLE_TYPE_SCOPES = {
     "body_mass": "read:body",
     "body_fat_percentage": "read:body",
     "lean_body_mass": "read:body",
+    "waist_circumference": "read:body",
     "height": "read:body",
     "heart_rate": "read:vitals",
     "resting_heart_rate": "read:vitals",
