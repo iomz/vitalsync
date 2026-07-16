@@ -192,6 +192,7 @@ final class HealthKitManager: ObservableObject {
             HKObjectType.quantityType(forIdentifier: .bodyMass)!,
             HKObjectType.quantityType(forIdentifier: .bodyFatPercentage)!,
             HKObjectType.quantityType(forIdentifier: .leanBodyMass)!,
+            HKObjectType.quantityType(forIdentifier: .waistCircumference)!,
             HKObjectType.quantityType(forIdentifier: .height)!,
         ], enabled: true),
         VitalsyncTypeGroup(id: "vitals", displayName: "Vitals", sampleTypes: [
@@ -655,7 +656,7 @@ final class HealthKitManager: ObservableObject {
             return (s.quantity.doubleValue(for: .gramUnit(with: .kilo)), "kg")
         case .bodyFatPercentage:
             return (s.quantity.doubleValue(for: .percent()), "%")
-        case .height:
+        case .waistCircumference, .height:
             return (s.quantity.doubleValue(for: .meter()), "m")
         case .heartRate, .restingHeartRate:
             return (s.quantity.doubleValue(for: HKUnit.count().unitDivided(by: .minute())), "count/min")
@@ -685,6 +686,7 @@ final class HealthKitManager: ObservableObject {
         case HKObjectType.quantityType(forIdentifier: .bodyMass):          return .bodyMass
         case HKObjectType.quantityType(forIdentifier: .bodyFatPercentage): return .bodyFatPercentage
         case HKObjectType.quantityType(forIdentifier: .leanBodyMass):     return .leanBodyMass
+        case HKObjectType.quantityType(forIdentifier: .waistCircumference): return .waistCircumference
         case HKObjectType.quantityType(forIdentifier: .height):            return .height
         case HKObjectType.quantityType(forIdentifier: .heartRate):         return .heartRate
         case HKObjectType.quantityType(forIdentifier: .restingHeartRate): return .restingHeartRate

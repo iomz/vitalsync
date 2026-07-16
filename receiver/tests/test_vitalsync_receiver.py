@@ -103,6 +103,20 @@ class ReceiverTest(unittest.TestCase):
                     "value": {"quantity": 9123},
                     "unit": "count",
                     "metadata": {"aggregate": "day", "date": "2026-06-26"},
+                },
+                {
+                    "schema": "vitalsync.record.v1",
+                    "source": "apple_health",
+                    "source_id": "sample_waist_1",
+                    "sample_type": "waist_circumference",
+                    "source_bundle_id": "com.apple.Health",
+                    "source_name": "Health",
+                    "start_time": "2026-06-26T00:00:00+09:00",
+                    "end_time": "2026-06-26T00:00:00+09:00",
+                    "timezone": "Asia/Tokyo",
+                    "value": {"quantity": 0.82},
+                    "unit": "m",
+                    "metadata": {},
                 }
             ],
             "deleted": [],
@@ -117,7 +131,7 @@ class ReceiverTest(unittest.TestCase):
             },
         )
         self.assertEqual(status, 200)
-        self.assertEqual(ack["accepted"], 2)
+        self.assertEqual(ack["accepted"], 3)
         self.assertFalse(ack["duplicate"])
 
         status, duplicate = self.request(
@@ -135,7 +149,7 @@ class ReceiverTest(unittest.TestCase):
         status, consumer = self.request(
             "POST",
             "/consumer-tokens",
-            {"scope": ["read:activity"], "expires_in_seconds": 3600},
+            {"scope": ["read:activity", "read:body"], "expires_in_seconds": 3600},
             {"Authorization": "Bearer admin-secret"},
         )
         self.assertEqual(status, 200)
@@ -159,6 +173,15 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(daily_records["records"][0]["source_id"], "daily_step_count_2026-06-26")
         self.assertEqual(daily_records["records"][0]["value"]["quantity"], 9123)
 
+        status, waist_records = self.request(
+            "GET",
+            "/records?sample_type=waist_circumference&limit=10",
+            headers={"Authorization": f"Bearer {consumer['access_token']}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(waist_records["records"][0]["source_id"], "sample_waist_1")
+        self.assertEqual(waist_records["records"][0]["value"]["quantity"], 0.82)
+
         status, stats = self.request(
             "GET",
             "/admin/stats",
@@ -170,13 +193,15 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(stats["devices"]["total"], 1)
         self.assertEqual(stats["devices"]["active"], 1)
         self.assertEqual(stats["batches"]["total"], 1)
-        self.assertEqual(stats["records"]["total"], 2)
-        self.assertEqual(stats["records"]["active"], 2)
+        self.assertEqual(stats["records"]["total"], 3)
+        self.assertEqual(stats["records"]["active"], 3)
         self.assertEqual(stats["records"]["deleted"], 0)
         self.assertEqual(stats["records"]["by_sample_type"][0]["sample_type"], "daily_step_count")
         self.assertEqual(stats["records"]["by_sample_type"][0]["active"], 1)
         self.assertEqual(stats["records"]["by_sample_type"][1]["sample_type"], "step_count")
         self.assertEqual(stats["records"]["by_sample_type"][1]["active"], 1)
+        self.assertEqual(stats["records"]["by_sample_type"][2]["sample_type"], "waist_circumference")
+        self.assertEqual(stats["records"]["by_sample_type"][2]["active"], 1)
 
         status, error = self.request(
             "GET",

@@ -99,6 +99,7 @@ enum VitalsyncSampleType: String, Codable {
     case bodyMass = "body_mass"
     case bodyFatPercentage = "body_fat_percentage"
     case leanBodyMass = "lean_body_mass"
+    case waistCircumference = "waist_circumference"
     case height
     case heartRate = "heart_rate"
     case restingHeartRate = "resting_heart_rate"
